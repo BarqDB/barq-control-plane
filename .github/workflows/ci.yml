@@ -15,7 +15,7 @@ concurrency:
 
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
-  BARQ_CORE_COMMIT: f22d33c6a08cd1b9b6f5c93bd2361ab278892811
+  BARQ_CORE_COMMIT: 02e17ea47a5cd80bf7dde6ced3216643bf097ea3
 
 jobs:
   server:
