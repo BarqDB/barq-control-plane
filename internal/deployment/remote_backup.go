@@ -105,16 +105,15 @@ func ConfigureRemoteBackup(ctx context.Context, options ConfigureRemoteBackupOpt
 		return ConfigureRemoteBackupResult{}, err
 	}
 	runner := defaultRunner(options.Runner)
-	stdout, stderr := defaultWriter(options.Stdout), defaultWriter(options.Stderr)
 	var ignored io.Writer = io.Discard
-	if err := runRestic(ctx, runner, dir, config, ignored, ignored, "snapshots", "--latest", "1"); err != nil {
-		if err := runRestic(ctx, runner, dir, config, stdout, stderr, "init"); err != nil {
+	if initErr := runRestic(ctx, runner, dir, config, ignored, ignored, "init"); initErr != nil {
+		if verifyErr := runRestic(ctx, runner, dir, config, ignored, ignored, "cat", "config"); verifyErr != nil {
 			configRestoreErr := oldConfig.restore(configPath)
 			recoveryRestoreErr := oldRecovery.restore(recoveryPath)
 			if configRestoreErr != nil || recoveryRestoreErr != nil {
-				return ConfigureRemoteBackupResult{}, fmt.Errorf("initialize encrypted backup repository: %v; restore old configuration: %v %v", err, configRestoreErr, recoveryRestoreErr)
+				return ConfigureRemoteBackupResult{}, fmt.Errorf("open encrypted backup repository: %v; restore old configuration: %v %v", verifyErr, configRestoreErr, recoveryRestoreErr)
 			}
-			return ConfigureRemoteBackupResult{}, fmt.Errorf("initialize encrypted backup repository: %w", err)
+			return ConfigureRemoteBackupResult{}, fmt.Errorf("open encrypted backup repository: %w", verifyErr)
 		}
 	}
 	return ConfigureRemoteBackupResult{RecoveryKeyPath: recoveryPath}, nil
