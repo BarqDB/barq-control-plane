@@ -1,0 +1,100 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
+
+jobs:
+  server:
+    name: Server build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v4
+        with:
+          path: server
+
+      - name: Check out barq-go
+        uses: actions/checkout@v4
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: recursive
+
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libssl-dev zlib1g-dev
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Build BarqDB client library
+        run: make -C client/barq-go native
+
+      - name: Test
+        working-directory: server
+        run: go test -race ./...
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: Build server
+        working-directory: server
+        run: CGO_ENABLED=1 go build -trimpath -o barq-server ./cmd/barq-server
+
+      - name: Upload server binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: barq-server-linux-amd64
+          path: server/barq-server
+          if-no-files-found: error
+          retention-days: 7
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v4
+        with:
+          path: server
+
+      - name: Check out barq-go
+        uses: actions/checkout@v4
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: false
+          tags: barq-control-plane:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

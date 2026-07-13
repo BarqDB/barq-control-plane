@@ -1,0 +1,246 @@
+openapi: 3.1.0
+info:
+  title: Barq private data-plane API
+  version: 1.0.0
+  description: Private protocol between barq-server and the C++ Barq data process.
+servers:
+  - url: http://127.0.0.1:9091
+security:
+  - bearerAuth: []
+paths:
+  /internal/v1/health:
+    get:
+      summary: Check data-plane health
+      operationId: health
+      responses:
+        "200":
+          description: Data plane is ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /internal/v1/read:
+    post:
+      summary: Read one object
+      operationId: readObject
+      requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200":
+          description: Object found.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Object"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/write:
+    post:
+      summary: Commit one object write
+      operationId: writeObject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WriteRequest"}
+      responses:
+        "200":
+          description: Write committed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WriteResult"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/query:
+    post:
+      summary: Query objects
+      operationId: queryObjects
+      requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200":
+          description: Query result.
+          content:
+            application/json:
+              schema: {type: object}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/batch:
+    post:
+      summary: Commit an atomic write batch
+      operationId: executeBatch
+      requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200":
+          description: Atomic batch result.
+          content:
+            application/json:
+              schema: {type: object}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/schema/plan:
+    post:
+      summary: Plan a schema change
+      operationId: planSchema
+      requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200": {$ref: "#/components/responses/JSON"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/schema/apply:
+    post:
+      summary: Apply a schema change
+      operationId: applySchema
+      requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200": {$ref: "#/components/responses/JSON"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/changes:
+    get:
+      summary: Read ordered database changes
+      operationId: readChanges
+      parameters:
+        - {name: tenant, in: query, required: true, schema: {type: string}}
+        - {name: database, in: query, required: true, schema: {type: string}}
+        - {name: after, in: query, required: true, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000}}
+        - {name: wait_ms, in: query, schema: {type: integer, minimum: 0, maximum: 30000}}
+      responses:
+        "200":
+          description: Ordered changes after the cursor. Events may repeat.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangesResult"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/events/materialize:
+    post:
+      summary: Materialize an event snapshot
+      operationId: materializeEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/MaterializeRequest"}
+      responses:
+        "200":
+          description: Event data read from its committed snapshot.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EventContext"}
+        default: {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  requestBodies:
+    JSONRequest:
+      required: true
+      content:
+        application/json:
+          schema: {type: object}
+  responses:
+    JSON:
+      description: JSON response.
+      content:
+        application/json:
+          schema: {type: object}
+    Error:
+      description: Request failed.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+  schemas:
+    Scope:
+      type: object
+      additionalProperties: false
+      required: [tenant, database]
+      properties:
+        tenant: {type: string, minLength: 1}
+        database: {type: string, minLength: 1}
+    Object:
+      type: object
+      additionalProperties: false
+      required: [type, primary_key, data, etag]
+      properties:
+        type: {type: string}
+        primary_key: {}
+        data: {type: object}
+        etag: {type: string}
+    WriteRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, operation, type, primary_key]
+      properties:
+        request_id: {type: string}
+        idempotency_key: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        operation: {enum: [create, patch, delete]}
+        type: {type: string}
+        primary_key: {}
+        data: {type: object}
+        if_match: {type: string}
+    WriteResult:
+      type: object
+      additionalProperties: false
+      required: [cursor]
+      properties:
+        object: {$ref: "#/components/schemas/Object"}
+        deleted: {type: boolean}
+        cursor: {type: integer, minimum: 1}
+    ChangeEvent:
+      type: object
+      additionalProperties: false
+      required: [id, scope, cursor, snapshot, type, object_type, primary_key, source, committed_at]
+      properties:
+        id: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        cursor: {type: integer, minimum: 1}
+        snapshot: {type: integer, minimum: 1}
+        type: {type: string}
+        object_type: {type: string}
+        primary_key: {}
+        source: {enum: [sync, api, migration, system]}
+        changed_fields: {type: array, items: {type: string}}
+        before: {type: object}
+        after: {type: object}
+        committed_at: {type: string, format: date-time}
+    ChangesResult:
+      type: object
+      additionalProperties: false
+      required: [events, next_cursor]
+      properties:
+        events: {type: array, items: {$ref: "#/components/schemas/ChangeEvent"}}
+        next_cursor: {type: integer, minimum: 0}
+    RelatedRead:
+      type: object
+      additionalProperties: false
+      required: [as, from, where]
+      properties:
+        as: {type: string}
+        from: {type: string}
+        where: {type: object}
+        sort: {type: array, items: {type: object}}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        one: {type: boolean}
+    MaterializeRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, event_id]
+      properties:
+        scope: {$ref: "#/components/schemas/Scope"}
+        event_id: {type: string}
+        reads: {type: array, maxItems: 5, items: {$ref: "#/components/schemas/RelatedRead"}}
+    EventContext:
+      type: object
+      additionalProperties: false
+      required: [event]
+      properties:
+        event: {$ref: "#/components/schemas/ChangeEvent"}
+        before: {type: object}
+        after: {type: object}
+        related: {type: object}
+    Health:
+      type: object
+      required: [status, version, capabilities]
+      properties:
+        status: {const: ok}
+        version: {type: string}
+        capabilities: {type: array, items: {type: string}}
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        details: {type: object}

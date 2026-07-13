@@ -1,0 +1,227 @@
+openapi: 3.1.0
+info:
+  title: Barq Server API
+  version: 0.2.0
+  description: Public tenant data and webhook control API for BarqDB.
+servers:
+  - url: /
+security:
+  - serviceKey: []
+paths:
+  /health/live:
+    get:
+      summary: Check process liveness
+      operationId: checkLiveness
+      security: []
+      responses: {"200": {description: Process is alive.}}
+  /health/ready:
+    get:
+      summary: Check server readiness
+      operationId: checkReadiness
+      security: []
+      responses: {"200": {description: Data plane is ready.}, "503": {description: Data plane is unavailable.}}
+  /v1/tenants/{tenant}/databases/{database}/objects/{type}:
+    post:
+      summary: Create an object
+      operationId: createObject
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/type"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [primary_key, data]
+              properties: {primary_key: {}, data: {type: object}}
+      responses: {"201": {description: Object created.}, "409": {description: Object exists.}}
+  /v1/tenants/{tenant}/databases/{database}/objects/{type}/{primaryKey}:
+    get:
+      summary: Read an object
+      operationId: readObject
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/type"}
+        - {$ref: "#/components/parameters/primaryKey"}
+      responses: {"200": {description: Object and ETag.}, "404": {description: Object not found.}}
+    patch:
+      summary: Patch an object
+      operationId: patchObject
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/type"}
+        - {$ref: "#/components/parameters/primaryKey"}
+      responses: {"200": {description: Object updated.}, "409": {description: Stale ETag.}}
+    delete:
+      summary: Delete an object
+      operationId: deleteObject
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/type"}
+        - {$ref: "#/components/parameters/primaryKey"}
+      responses: {"200": {description: Object deleted.}, "409": {description: Stale ETag.}}
+  /v1/tenants/{tenant}/databases/{database}/objects/{type}:query:
+    post:
+      summary: Query objects
+      operationId: queryObjects
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/type"}
+      responses: {"200": {description: Cursor-paged query result.}}
+  /v1/tenants/{tenant}/databases/{database}:batch:
+    post:
+      summary: Commit an atomic batch
+      operationId: executeBatch
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      responses: {"200": {description: Atomic batch result.}}
+  /v1/tenants/{tenant}/databases/{database}/schema:{action}:
+    post:
+      summary: Plan or apply an additive schema migration
+      operationId: changeSchema
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [plan, apply]}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SchemaRequest"}
+      responses: {"200": {description: Schema plan or applied migration.}, "409": {description: Unsafe migration.}}
+  /v1/webhooks:
+    get:
+      summary: List webhooks
+      operationId: listWebhooks
+      responses: {"200": {description: Visible webhook registrations.}}
+    post:
+      summary: Register a webhook
+      operationId: registerWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRegistration"}
+      responses:
+        "201":
+          description: Webhook and one-time signing secret.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RegisteredWebhook"}
+  /v1/webhooks/{id}:
+    parameters:
+      - {$ref: "#/components/parameters/id"}
+    get:
+      summary: Get a webhook
+      operationId: getWebhook
+      responses: {"200": {description: Webhook registration.}}
+    patch:
+      summary: Update a webhook
+      operationId: updateWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WebhookRegistration"}
+      responses: {"200": {description: New immutable revision activated.}}
+    delete:
+      summary: Disable a webhook
+      operationId: disableWebhook
+      responses: {"204": {description: Webhook disabled.}}
+  /v1/webhooks/{id}:test:
+    parameters:
+      - {$ref: "#/components/parameters/id"}
+    post:
+      summary: Test a webhook transform
+      operationId: testWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, description: Materialized event context passed to the transform.}
+      responses: {"200": {description: Rendered test payload.}}
+  /v1/webhooks/{id}:rotate-secret:
+    parameters:
+      - {$ref: "#/components/parameters/id"}
+    post:
+      summary: Rotate a webhook secret
+      operationId: rotateWebhookSecret
+      responses: {"200": {description: New one-time signing secret.}}
+  /v1/webhooks/{id}:replay:
+    parameters:
+      - {$ref: "#/components/parameters/id"}
+    post:
+      summary: Replay dead webhook deliveries
+      operationId: replayWebhook
+      responses: {"200": {description: Dead deliveries queued again.}}
+components:
+  securitySchemes:
+    serviceKey: {type: http, scheme: bearer}
+  parameters:
+    tenant: {name: tenant, in: path, required: true, schema: {type: string}}
+    database: {name: database, in: path, required: true, schema: {type: string}}
+    type: {name: type, in: path, required: true, schema: {type: string}}
+    primaryKey: {name: primaryKey, in: path, required: true, schema: {type: string}}
+    id: {name: id, in: path, required: true, schema: {type: string}}
+  schemas:
+    Scope:
+      type: object
+      additionalProperties: false
+      required: [tenant, database]
+      properties:
+        tenant: {type: string}
+        database: {type: string}
+    Transform:
+      type: object
+      additionalProperties: false
+      required: [language, source]
+      properties:
+        language: {type: string, const: javascript}
+        source: {type: string, description: Sandboxed JavaScript defining transform(ctx) and optional filter(ctx).}
+    WebhookRegistration:
+      type: object
+      additionalProperties: false
+      required: [name, scope, url, events, transform]
+      properties:
+        name: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        url: {type: string, format: uri}
+        events: {type: array, minItems: 1, items: {type: string}}
+        object_types: {type: array, items: {type: string}}
+        reads: {type: array, maxItems: 5, items: {type: object}}
+        transform: {$ref: "#/components/schemas/Transform"}
+        limits: {type: object}
+    Webhook:
+      type: object
+      required: [id, name, scope, url, events, active_revision, enabled]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        url: {type: string, format: uri}
+        events: {type: array, items: {type: string}}
+        object_types: {type: array, items: {type: string}}
+        active_revision: {type: integer, minimum: 1}
+        enabled: {type: boolean}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RegisteredWebhook:
+      type: object
+      required: [webhook, secret]
+      properties:
+        webhook: {$ref: "#/components/schemas/Webhook"}
+        secret: {type: string, description: Returned once. Store it securely.}
+    SchemaRequest:
+      type: object
+      additionalProperties: false
+      required: [version, manifest]
+      properties:
+        version: {type: integer, minimum: 1}
+        manifest: {type: object}

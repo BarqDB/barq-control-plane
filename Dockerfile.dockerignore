@@ -1,0 +1,11 @@
+**/.git
+**/.github
+**/.idea
+**/.vscode
+**/.build-server
+**/external/core/build-go
+**/*.barq
+**/*.barq.*
+**/*.test
+**/barq-server
+**/coverage.out

@@ -1,0 +1,5 @@
+/barq-server
+/coverage.out
+/.idea/
+/.vscode/
+*.test

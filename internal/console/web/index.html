@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Barq Control</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <header class="masthead">
+    <a class="brand" href="/control/" aria-label="Barq control home">
+      <span class="brand-mark">BQ</span>
+      <span><strong>BARQ</strong><small>CONTROL / LOCAL</small></span>
+    </a>
+    <div class="system-strip">
+      <span class="status-dot" id="system-dot"></span>
+      <span id="system-status">CONNECTING</span>
+      <span class="strip-rule"></span>
+      <span id="system-version">CORE —</span>
+    </div>
+    <nav>
+      <a href="/docs/" target="_blank" rel="noreferrer">API DOCS ↗</a>
+      <button class="text-button" id="credentials-button" type="button">ACCESS KEY</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero reveal">
+      <div>
+        <p class="eyebrow">CONTROL PLANE / WEBHOOK OPERATIONS</p>
+        <h1>Signals out.<br><em>Nothing lost.</em></h1>
+      </div>
+      <p class="hero-note">Register routes, shape payloads, rotate secrets, and replay failures. State is held locally in <code>control.barq</code>.</p>
+    </section>
+
+    <section class="metrics reveal delay-1" aria-label="System metrics">
+      <article><span>REGISTERED</span><strong id="metric-total">—</strong><small>webhook routes</small></article>
+      <article><span>ACTIVE</span><strong id="metric-active">—</strong><small>currently armed</small></article>
+      <article><span>DATA PLANE</span><strong class="word" id="metric-plane">—</strong><small id="metric-capabilities">waiting</small></article>
+      <article class="accent"><span>LOCAL STORE</span><strong class="word">BARQ</strong><small>versioned records</small></article>
+    </section>
+
+    <section class="workspace reveal delay-2">
+      <div class="section-heading">
+        <div><p class="eyebrow">ROUTE REGISTRY</p><h2>Webhooks</h2></div>
+        <div class="actions">
+          <label class="search"><span>⌕</span><input id="search" type="search" placeholder="Filter routes" autocomplete="off"></label>
+          <button class="button primary" id="new-hook" type="button">+ NEW ROUTE</button>
+        </div>
+      </div>
+      <div class="route-list" id="route-list" aria-live="polite"></div>
+      <div class="empty" id="empty-state" hidden>
+        <span>00</span><h3>No routes found</h3><p>Register the first outbound signal from Barq.</p>
+        <button class="button" id="empty-new-hook" type="button">REGISTER WEBHOOK</button>
+      </div>
+    </section>
+  </main>
+
+  <aside class="drawer" id="drawer" aria-hidden="true" aria-labelledby="drawer-title">
+    <div class="drawer-head"><span>ROUTE DETAIL</span><button class="icon-button" id="drawer-close" type="button" aria-label="Close">×</button></div>
+    <div id="drawer-content"></div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <dialog id="hook-dialog">
+    <form id="hook-form">
+      <header><div><p class="eyebrow">NEW OUTBOUND SIGNAL</p><h2>Register route</h2></div><button class="icon-button" value="cancel" formmethod="dialog" aria-label="Close">×</button></header>
+      <div class="form-grid">
+        <label class="wide">Display name<input name="name" required placeholder="Orders → fulfillment"></label>
+        <label>Tenant<input name="tenant" required placeholder="acme"></label>
+        <label>Database<input name="database" required placeholder="main"></label>
+        <label class="wide">Target URL<input name="url" type="url" required placeholder="https://hooks.example.com/barq"></label>
+        <label>Events<input name="events" required value="*" placeholder="Order.created, Order.updated"><small>Comma separated; use * for all.</small></label>
+        <label>Object types<input name="object_types" placeholder="Order, Customer"><small>Optional filter.</small></label>
+        <label class="wide">JavaScript transform<textarea name="source" required spellcheck="false">function transform(ctx) {
+  return {
+    event: ctx.event.type,
+    data: ctx.after
+  };
+}</textarea></label>
+      </div>
+      <footer><button class="button" value="cancel" formmethod="dialog">CANCEL</button><button class="button primary" type="submit">REGISTER ROUTE</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="credentials" id="credentials-dialog">
+    <form id="credentials-form">
+      <header><div><p class="eyebrow">LOCAL SESSION</p><h2>Service access</h2></div><button class="icon-button" value="cancel" formmethod="dialog" aria-label="Close">×</button></header>
+      <p>The key stays in this browser tab. It is never written to BarqDB.</p>
+      <label>Service API key<input id="api-key" type="password" autocomplete="off" placeholder="Paste bearer key"></label>
+      <footer><button class="button danger" id="forget-key" type="button">FORGET KEY</button><button class="button primary" type="submit">CONNECT</button></footer>
+    </form>
+  </dialog>
+
+  <div class="secret-panel" id="secret-panel" hidden>
+    <div><span>ONE-TIME SIGNING SECRET</span><code id="secret-value"></code></div>
+    <button class="button" id="copy-secret" type="button">COPY</button>
+    <button class="icon-button" id="secret-close" type="button" aria-label="Close">×</button>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

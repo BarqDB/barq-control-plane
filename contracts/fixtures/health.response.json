@@ -1,0 +1,5 @@
+{
+  "status": "ok",
+  "version": "fixture-v1",
+  "capabilities": ["crud", "batch", "schema", "changes", "materialize"]
+}

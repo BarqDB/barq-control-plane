@@ -1,0 +1,18 @@
+{
+  "events": [
+    {
+      "id": "tenant-a/main:1",
+      "scope": {"tenant": "tenant-a", "database": "main"},
+      "cursor": 1,
+      "snapshot": 1,
+      "type": "Task.created",
+      "object_type": "Task",
+      "primary_key": "one",
+      "source": "api",
+      "changed_fields": ["done", "title"],
+      "after": {"done": false, "title": "First"},
+      "committed_at": "2026-07-12T00:00:00Z"
+    }
+  ],
+  "next_cursor": 1
+}

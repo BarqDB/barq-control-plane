@@ -1,0 +1,13 @@
+{
+  "scope": {"tenant": "tenant-a", "database": "main"},
+  "event_id": "tenant-a/main:2",
+  "reads": [
+    {
+      "as": "customer",
+      "from": "Customer",
+      "where": {"field": "_id", "op": "eq", "value": {"$ref": "after.customer_id"}},
+      "one": true,
+      "limit": 1
+    }
+  ]
+}

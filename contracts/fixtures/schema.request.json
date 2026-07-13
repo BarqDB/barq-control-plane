@@ -1,0 +1,18 @@
+{
+  "request_id": "schema-1",
+  "scope": {"tenant": "tenant-a", "database": "main"},
+  "version": 1,
+  "manifest": {
+    "objects": [
+      {
+        "name": "Task",
+        "primary_key": {"name": "id", "type": "string"},
+        "properties": [
+          {"name": "id", "type": "string"},
+          {"name": "title", "type": "string"},
+          {"name": "done", "type": "bool"}
+        ]
+      }
+    ]
+  }
+}
