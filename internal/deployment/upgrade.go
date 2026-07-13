@@ -45,8 +45,12 @@ func Upgrade(ctx context.Context, options UpgradeOptions) (UpgradeResult, error)
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("resolve release %s: %w", version, err)
 	}
+	release = normalizeRelease(release)
 	if release.Version != version || !fixedImage(release.ControlImage) || !fixedImage(release.CoreImage) {
 		return UpgradeResult{}, errors.New("target release is invalid or does not use fixed image digests")
+	}
+	if err := validateReleaseCompatibility(release); err != nil {
+		return UpgradeResult{}, err
 	}
 	lock, err := acquireMaintenanceLock(dir)
 	if err != nil {
@@ -89,6 +93,9 @@ func Rollback(ctx context.Context, options RollbackOptions) (UpgradeResult, erro
 		return UpgradeResult{}, errors.New("there is no previous release to roll back to")
 	}
 	target := manifest.Previous[len(manifest.Previous)-1]
+	if err := validateReleaseCompatibility(target); err != nil {
+		return UpgradeResult{}, err
+	}
 	manifest.Previous = manifest.Previous[:len(manifest.Previous)-1]
 	return changeRelease(ctx, dir, manifest, target, options.Runner, options.Stdout, options.Stderr, options.Now)
 }
@@ -97,6 +104,12 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 	runner = defaultRunner(runner)
 	stdout, stderr = defaultWriter(stdout), defaultWriter(stderr)
 	current := manifest.Release
+	if err := pullRelease(ctx, runner, dir, stdout, stderr, target); err != nil {
+		return UpgradeResult{}, fmt.Errorf("download target release: %w", err)
+	}
+	if err := checkReleaseMigration(ctx, runner, dir, stdout, stderr, current, target); err != nil {
+		return UpgradeResult{}, fmt.Errorf("target release preflight: %w", err)
+	}
 	backup, err := Backup(ctx, BackupOptions{Dir: dir, Runner: runner, Stdout: stdout, Stderr: stderr, Now: now, skipLock: true})
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("pre-upgrade backup: %w", err)
@@ -131,20 +144,54 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 		_ = writeFile(dir, ".env", oldEnvironment, 0o600)
 		return UpgradeResult{}, err
 	}
-	applyErr := runCompose(ctx, runner, dir, nil, stdout, stderr, "pull", "core", "control")
+	applyErr := runCompose(ctx, runner, dir, nil, stdout, stderr, "stop", "edge", "control")
+	if applyErr == nil {
+		applyErr = runCompose(ctx, runner, dir, nil, stdout, stderr,
+			"run", "--rm", "--no-deps", "--entrypoint", "/usr/local/bin/barq-server", "control",
+			"migrate", "--apply", "--from", fmt.Sprint(current.ControlSchema), "--to", fmt.Sprint(target.ControlSchema))
+	}
 	if applyErr == nil {
 		applyErr = runCompose(ctx, runner, dir, nil, stdout, stderr, "up", "-d", "--wait")
 	}
 	if applyErr != nil {
-		_ = writeFile(dir, ".env", oldEnvironment, 0o600)
-		_ = writeFile(dir, manifestName, oldManifest, 0o644)
-		rollbackErr := runCompose(context.Background(), runner, dir, nil, stdout, stderr, "up", "-d", "--wait")
+		rollbackErr := restoreFailedRelease(runner, dir, stdout, stderr, oldEnvironment, oldManifest, backup.Path)
 		if rollbackErr != nil {
 			return UpgradeResult{}, fmt.Errorf("release failed: %v; automatic rollback also failed: %v; safety backup: %s", applyErr, rollbackErr, backup.Path)
 		}
 		return UpgradeResult{}, fmt.Errorf("release failed and was rolled back: %w; safety backup: %s", applyErr, backup.Path)
 	}
 	return UpgradeResult{From: current.Version, To: target.Version, BackupPath: backup.Path}, nil
+}
+
+func pullRelease(ctx context.Context, runner Runner, dir string, stdout, stderr io.Writer, release Release) error {
+	for _, image := range []string{release.CoreImage, release.ControlImage} {
+		if err := runner.Run(ctx, dir, nil, stdout, stderr, nil, "docker", "pull", image); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkReleaseMigration(ctx context.Context, runner Runner, dir string, stdout, stderr io.Writer, current, target Release) error {
+	if current.InternalProtocol != target.InternalProtocol || current.CoreDataFormat != target.CoreDataFormat {
+		return errors.New("release changes an unsupported protocol or Core data format")
+	}
+	return runner.Run(ctx, dir, nil, stdout, stderr, nil, "docker", "run", "--rm",
+		"--entrypoint", "/usr/local/bin/barq-server", target.ControlImage,
+		"migrate", "--check", "--from", fmt.Sprint(current.ControlSchema), "--to", fmt.Sprint(target.ControlSchema))
+}
+
+func restoreFailedRelease(runner Runner, dir string, stdout, stderr io.Writer, oldEnvironment, oldManifest []byte, backupPath string) error {
+	if err := writeFile(dir, ".env", oldEnvironment, 0o600); err != nil {
+		return err
+	}
+	if err := writeFile(dir, manifestName, oldManifest, 0o644); err != nil {
+		return err
+	}
+	_, err := Restore(context.Background(), RestoreOptions{
+		Dir: dir, Backup: backupPath, Runner: runner, Stdout: stdout, Stderr: stderr, SafetyBackup: false, skipLock: true,
+	})
+	return err
 }
 
 func replaceEnvironment(data []byte, replacements map[string]string) ([]byte, error) {

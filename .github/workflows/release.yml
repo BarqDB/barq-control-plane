@@ -241,6 +241,9 @@ jobs:
               "version": os.environ["GITHUB_REF_NAME"],
               "control_image": os.environ["CONTROL_IMAGE"] + "@" + os.environ["CONTROL_DIGEST"],
               "core_image": os.environ["CORE_IMAGE"] + "@" + os.environ["CORE_DIGEST"],
+              "internal_protocol": 1,
+              "core_data_format": 1,
+              "control_schema": 1,
               "core_commit": os.environ["BARQ_CORE_COMMIT"],
               "barq_go_commit": os.environ["BARQ_GO_COMMIT"],
           }

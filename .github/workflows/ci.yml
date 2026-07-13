@@ -101,9 +101,13 @@ jobs:
           context: .
           file: server/Dockerfile
           push: false
+          load: true
           tags: barq-control-plane:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test migration preflight
+        run: docker run --rm barq-control-plane:ci migrate --check --from 1 --to 1
 
   core-image:
     name: Core Docker build and smoke test

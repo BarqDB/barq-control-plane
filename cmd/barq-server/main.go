@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +24,14 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		if err := migrationCommand(os.Args[2:]); err != nil {
+			logger.Error("control database migration", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("control database migration passed")
+		return
+	}
 	data, err := makeDataPlane()
 	if err != nil {
 		logger.Error("configure data plane", "error", err)
@@ -37,6 +47,11 @@ func main() {
 	store, err := control.OpenBarqStore(controlDatabasePath())
 	if err != nil {
 		logger.Error("open control Barq", "error", err)
+		os.Exit(1)
+	}
+	if err := control.EnsureSchema(context.Background(), store); err != nil {
+		logger.Error("prepare control schema", "error", err)
+		_ = store.Close()
 		os.Exit(1)
 	}
 	defer func() {
@@ -78,6 +93,33 @@ func main() {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func migrationCommand(args []string) error {
+	set := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	check := set.Bool("check", false, "check whether the migration is supported")
+	apply := set.Bool("apply", false, "apply the migration to the control database")
+	from := set.Int("from", control.CurrentSchemaVersion, "current control schema version")
+	to := set.Int("to", control.CurrentSchemaVersion, "target control schema version")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 || *check == *apply {
+		return fmt.Errorf("use exactly one of --check or --apply")
+	}
+	if err := control.CheckMigration(*from, *to); err != nil {
+		return err
+	}
+	if *check {
+		return nil
+	}
+	store, err := control.OpenBarqStore(controlDatabasePath())
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return control.ApplyMigration(context.Background(), store, *from, *to)
 }
 
 func hasCapability(health dataplane.Health, capability string) bool {

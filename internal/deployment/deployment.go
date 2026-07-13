@@ -26,6 +26,12 @@ import (
 
 const manifestName = "deployment.json"
 
+const (
+	CurrentInternalProtocol = 1
+	CurrentCoreDataFormat   = 1
+	CurrentControlSchema    = 1
+)
+
 type Manifest struct {
 	Version   string    `json:"version"`
 	Domain    string    `json:"domain"`
@@ -54,9 +60,12 @@ type InitResult struct {
 }
 
 type Release struct {
-	Version      string `json:"version"`
-	ControlImage string `json:"control_image"`
-	CoreImage    string `json:"core_image"`
+	Version          string `json:"version"`
+	ControlImage     string `json:"control_image"`
+	CoreImage        string `json:"core_image"`
+	InternalProtocol int    `json:"internal_protocol"`
+	CoreDataFormat   int    `json:"core_data_format"`
+	ControlSchema    int    `json:"control_schema"`
 }
 
 func DefaultDir() (string, error) {
@@ -86,17 +95,22 @@ func Init(options InitOptions) (InitResult, error) {
 	if (options.ControlImage == "") != (options.CoreImage == "") {
 		return InitResult{}, errors.New("control-image and core-image must be provided together")
 	}
+	release := normalizeRelease(Release{Version: version, ControlImage: options.ControlImage, CoreImage: options.CoreImage})
 	if options.ControlImage == "" {
 		resolve := ResolveRelease
 		if options.Resolve != nil {
 			resolve = options.Resolve
 		}
-		release, err := resolve(version)
+		release, err = resolve(version)
 		if err != nil {
 			return InitResult{}, fmt.Errorf("resolve release %s: %w", version, err)
 		}
 		if release.Version != version {
 			return InitResult{}, fmt.Errorf("release manifest version is %q, expected %q", release.Version, version)
+		}
+		release = normalizeRelease(release)
+		if err := validateReleaseCompatibility(release); err != nil {
+			return InitResult{}, err
 		}
 		if !fixedImage(release.ControlImage) || !fixedImage(release.CoreImage) {
 			return InitResult{}, errors.New("release manifest images must use fixed sha256 digests")
@@ -124,7 +138,6 @@ func Init(options InitOptions) (InitResult, error) {
 	if options.Now != nil {
 		now = options.Now
 	}
-	release := Release{Version: version, ControlImage: options.ControlImage, CoreImage: options.CoreImage}
 	manifest := Manifest{Version: version, Domain: domain, Project: projectName(domain), URL: "https://" + domain, Release: release, CreatedAt: now().UTC()}
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -172,7 +185,7 @@ func ResolveRelease(version string) (Release, error) {
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&release); err != nil {
 		return Release{}, fmt.Errorf("decode release manifest: %w", err)
 	}
-	return release, nil
+	return normalizeRelease(release), nil
 }
 
 func Compose(ctx context.Context, dir string, stdout, stderr io.Writer, args ...string) error {
@@ -208,6 +221,10 @@ func LoadManifest(dir string) (Manifest, error) {
 	var manifest Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return Manifest{}, fmt.Errorf("read deployment manifest: %w", err)
+	}
+	manifest.Release = normalizeRelease(manifest.Release)
+	for index := range manifest.Previous {
+		manifest.Previous[index] = normalizeRelease(manifest.Previous[index])
 	}
 	return manifest, nil
 }
@@ -314,6 +331,35 @@ func fixedImage(image string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeRelease(release Release) Release {
+	if release.InternalProtocol == 0 {
+		release.InternalProtocol = CurrentInternalProtocol
+	}
+	if release.CoreDataFormat == 0 {
+		release.CoreDataFormat = CurrentCoreDataFormat
+	}
+	if release.ControlSchema == 0 {
+		release.ControlSchema = CurrentControlSchema
+	}
+	return release
+}
+
+func validateReleaseCompatibility(release Release) error {
+	if release.InternalProtocol != CurrentInternalProtocol {
+		return fmt.Errorf("release uses internal protocol %d; barqctl supports %d", release.InternalProtocol, CurrentInternalProtocol)
+	}
+	if release.CoreDataFormat != CurrentCoreDataFormat {
+		return fmt.Errorf("release uses Core data format %d; barqctl supports %d", release.CoreDataFormat, CurrentCoreDataFormat)
+	}
+	if release.ControlSchema > CurrentControlSchema {
+		return fmt.Errorf("release needs control schema %d; barqctl supports %d", release.ControlSchema, CurrentControlSchema)
+	}
+	if release.ControlSchema <= 0 {
+		return errors.New("release control schema must be positive")
+	}
+	return nil
 }
 
 func projectName(domain string) string {

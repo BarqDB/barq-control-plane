@@ -59,7 +59,10 @@ barqctl rollback
 `backup`, `upgrade`, and `rollback` briefly stop Barq so the database files are
 copied as one consistent snapshot. Every upgrade and rollback first makes a
 local safety backup. If the new containers do not become healthy, `barqctl`
-puts the old image digests back automatically.
+restores both the old image digests and the full pre-upgrade data snapshot.
+Before any downtime, it downloads the target images and checks the internal
+protocol, Core data format, and control-database migration path. Unsupported
+releases are rejected without touching the running stack.
 
 Backups are stored under `~/.barq/backups` by default. They contain the Barq
 data volume, deployment settings, keys, SHA-256 checksums, and release history.
@@ -115,8 +118,10 @@ The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
 
 Only ports 80 and 443 are published. The Core internal API is not exposed.
 The generated `.env` and JWT private key use file mode `0600`.
-Each domain gets its own stable Compose project and volume names. This lets one
-machine run separate client stacks without their data or networks colliding.
+Each domain gets stable Compose project, volume, and network names. The default
+bundle owns public ports 80 and 443, so it expects one public client stack per
+host. The later SaaS shape is one small isolated host per client, with several
+tenants inside that client's stack.
 
 For source builds without a published release, provide both images explicitly:
 

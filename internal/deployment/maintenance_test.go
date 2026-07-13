@@ -18,6 +18,8 @@ type recordingRunner struct {
 	environments  [][]string
 	failOn        string
 	failAlways    string
+	failAt        int
+	matchCount    int
 	failed        bool
 	restoreBackup string
 }
@@ -57,8 +59,15 @@ func (runner *recordingRunner) Run(_ context.Context, _ string, _ io.Reader, std
 		}
 	}
 	if runner.failOn != "" && !runner.failed && strings.Contains(command, runner.failOn) {
-		runner.failed = true
-		return context.DeadlineExceeded
+		runner.matchCount++
+		failAt := runner.failAt
+		if failAt == 0 {
+			failAt = 1
+		}
+		if runner.matchCount == failAt {
+			runner.failed = true
+			return context.DeadlineExceeded
+		}
 	}
 	if runner.failAlways != "" && strings.Contains(command, runner.failAlways) {
 		return context.DeadlineExceeded
@@ -137,15 +146,17 @@ func TestUpgradePinsReleaseAndKeepsRollbackState(t *testing.T) {
 	if !strings.Contains(environment, "BARQ_CORE_IMAGE=core@sha256:"+digestB) {
 		t.Fatal("environment did not move to fixed Core digest")
 	}
-	if !strings.Contains(strings.Join(runner.commands, "\n"), "pull core control") {
-		t.Fatal("upgrade did not pull both release images")
+	commands := strings.Join(runner.commands, "\n")
+	if !strings.Contains(commands, "docker pull core@sha256:") || !strings.Contains(commands, "docker pull control@sha256:") ||
+		!strings.Contains(commands, "migrate --check --from 1 --to 1") || !strings.Contains(commands, "migrate --apply --from 1 --to 1") {
+		t.Fatalf("upgrade did not pull and migrate the release:\n%s", commands)
 	}
 }
 
 func TestUpgradeRestoresOldStateWhenComposeFails(t *testing.T) {
 	dir := initTestDeployment(t)
 	beforeEnvironment := readTestFile(t, filepath.Join(dir, ".env"))
-	runner := &recordingRunner{failOn: "pull core control"}
+	runner := &recordingRunner{failOn: "run --rm --no-deps --entrypoint /usr/local/bin/barq-server control migrate --apply"}
 	digest := strings.Repeat("c", 64)
 	_, err := Upgrade(context.Background(), UpgradeOptions{
 		Dir: dir, Version: "v2", Runner: runner,
@@ -163,6 +174,55 @@ func TestUpgradeRestoresOldStateWhenComposeFails(t *testing.T) {
 	}
 	if manifest.Version != "v1" || readTestFile(t, filepath.Join(dir, ".env")) != beforeEnvironment {
 		t.Fatal("failed upgrade did not restore deployment state")
+	}
+}
+
+func TestUpgradeRejectsIncompatibleReleaseBeforeDockerOrDowntime(t *testing.T) {
+	dir := initTestDeployment(t)
+	runner := &recordingRunner{}
+	digest := strings.Repeat("d", 64)
+	_, err := Upgrade(context.Background(), UpgradeOptions{
+		Dir: dir, Version: "v3", Runner: runner,
+		Resolve: func(version string) (Release, error) {
+			return Release{
+				Version: version, ControlImage: "control@sha256:" + digest, CoreImage: "core@sha256:" + digest,
+				InternalProtocol: 1, CoreDataFormat: 2, ControlSchema: 1,
+			}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Core data format") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("incompatible release changed Docker state: %v", runner.commands)
+	}
+}
+
+func TestUpgradeRestoresSnapshotWhenNewReleaseIsUnhealthy(t *testing.T) {
+	dir := initTestDeployment(t)
+	beforeEnvironment := readTestFile(t, filepath.Join(dir, ".env"))
+	runner := &recordingRunner{failOn: "up -d --wait", failAt: 2}
+	digest := strings.Repeat("e", 64)
+	_, err := Upgrade(context.Background(), UpgradeOptions{
+		Dir: dir, Version: "v2", Runner: runner,
+		Now: func() time.Time { return time.Date(2026, 7, 13, 4, 0, 0, 0, time.UTC) },
+		Resolve: func(version string) (Release, error) {
+			return Release{Version: version, ControlImage: "control@sha256:" + digest, CoreImage: "core@sha256:" + digest}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	manifest, loadErr := LoadManifest(dir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if manifest.Version != "v1" || readTestFile(t, filepath.Join(dir, ".env")) != beforeEnvironment {
+		t.Fatal("health failure did not restore the old release")
+	}
+	commands := strings.Join(runner.commands, "\n")
+	if !strings.Contains(commands, "find /target") {
+		t.Fatalf("health failure did not restore the data snapshot:\n%s", commands)
 	}
 }
 
