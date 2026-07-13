@@ -133,7 +133,10 @@ go run ./cmd/barqctl init --domain db.example.com --release main \
 
 Tagged releases publish signed GHCR images, SBOM and provenance attestations,
 fixed image digests in `release.json`, and `barqctl` binaries for Linux, macOS,
-and Windows.
+and Windows. The release bundle includes Cosign. `barqctl init` and `upgrade`
+reject an image unless its digest was signed by the tagged Barq release
+workflow. Rollback uses a fixed digest that was verified when first installed,
+so emergency recovery does not need the signing service to be online.
 
 `go.mod` pins [`BarqDB/barq-go`](https://github.com/BarqDB/barq-go) and uses the
 workspace copy at `../client/barq-go`. Build its native library once before

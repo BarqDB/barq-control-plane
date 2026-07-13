@@ -15,6 +15,7 @@ env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
   BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
   RESTIC_VERSION: 0.19.1
+  COSIGN_VERSION: 3.1.1
   CONTROL_IMAGE: ghcr.io/barqdb/barq-control-plane
   CORE_IMAGE: ghcr.io/barqdb/barq-core
 
@@ -201,12 +202,22 @@ jobs:
             chmod 0755 "dist/package/restic"
           fi
 
+          cosign_suffix=""
+          if [ "$GOOS" = windows ]; then cosign_suffix=".exe"; fi
+          cosign_asset="cosign-${GOOS}-${GOARCH}${cosign_suffix}"
+          cosign_base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl --fail --silent --show-error --location --output "/tmp/${cosign_asset}" "${cosign_base}/${cosign_asset}"
+          curl --fail --silent --show-error --location --output /tmp/cosign-checksums "${cosign_base}/cosign_checksums.txt"
+          (cd /tmp && grep "  ${cosign_asset}$" cosign-checksums | sha256sum --check --strict -)
+          cp "/tmp/${cosign_asset}" "dist/package/cosign${cosign_suffix}"
+          chmod 0755 "dist/package/cosign${cosign_suffix}"
+
           archive="barq-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
           if [ "$GOOS" = windows ]; then
-            (cd dist/package && zip -9 "../${archive}.zip" barqctl.exe restic.exe)
+            (cd dist/package && zip -9 "../${archive}.zip" barqctl.exe restic.exe cosign.exe)
             sha256sum "dist/${archive}.zip" > "dist/${archive}.zip.sha256"
           else
-            tar -C dist/package -czf "dist/${archive}.tar.gz" barqctl restic
+            tar -C dist/package -czf "dist/${archive}.tar.gz" barqctl restic cosign
             sha256sum "dist/${archive}.tar.gz" > "dist/${archive}.tar.gz.sha256"
           fi
           rm -rf dist/package
@@ -251,6 +262,13 @@ jobs:
               json.dump(manifest, output, indent=2)
               output.write("\n")
           PY
+
+      - name: Attest release files
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/barq-*
+            dist/release.json
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v3

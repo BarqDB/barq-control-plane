@@ -198,6 +198,22 @@ func TestUpgradeRejectsIncompatibleReleaseBeforeDockerOrDowntime(t *testing.T) {
 	}
 }
 
+func TestVerifyReleaseChecksBothDigestsAndWorkflowIdentity(t *testing.T) {
+	runner := &recordingRunner{}
+	digest := strings.Repeat("f", 64)
+	release := Release{
+		Version: "v1.2.3", ControlImage: "control@sha256:" + digest, CoreImage: "core@sha256:" + digest,
+	}
+	if err := VerifyRelease(context.Background(), release, runner, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	commands := strings.Join(runner.commands, "\n")
+	if strings.Count(commands, "cosign verify") != 2 || !strings.Contains(commands, releaseWorkflowIdentity+release.Version) ||
+		!strings.Contains(commands, githubActionsIssuer) {
+		t.Fatalf("release verification is incomplete:\n%s", commands)
+	}
+}
+
 func TestUpgradeRestoresSnapshotWhenNewReleaseIsUnhealthy(t *testing.T) {
 	dir := initTestDeployment(t)
 	beforeEnvironment := readTestFile(t, filepath.Join(dir, ".env"))

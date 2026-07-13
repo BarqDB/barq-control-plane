@@ -261,7 +261,7 @@ func upgradeCommand(args []string) error {
 		return err
 	}
 	result, err := deployment.Upgrade(context.Background(), deployment.UpgradeOptions{
-		Dir: *dir, Version: *release, Stdout: os.Stdout, Stderr: os.Stderr,
+		Dir: *dir, Version: *release, Stdout: os.Stdout, Stderr: os.Stderr, Verify: verifyRelease,
 	})
 	if err != nil {
 		return err
@@ -303,7 +303,7 @@ func initCommand(args []string) error {
 		return errors.New("init does not take positional arguments")
 	}
 	result, err := deployment.Init(deployment.InitOptions{
-		Dir: *dir, Domain: *domain, Version: *release, ControlImage: *controlImage, CoreImage: *coreImage, Force: *force,
+		Dir: *dir, Domain: *domain, Version: *release, ControlImage: *controlImage, CoreImage: *coreImage, Force: *force, Verify: verifyRelease,
 	})
 	if err != nil {
 		return err
@@ -313,6 +313,10 @@ func initCommand(args []string) error {
 	fmt.Println("Save this key now. It is also stored in the private .env file.")
 	fmt.Println("Next: barqctl up")
 	return nil
+}
+
+func verifyRelease(release deployment.Release) error {
+	return deployment.VerifyRelease(context.Background(), release, nil, io.Discard, os.Stderr)
 }
 
 func composeCommand(name string, args []string, composeArgs ...string) error {

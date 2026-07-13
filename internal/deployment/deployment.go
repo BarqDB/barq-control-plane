@@ -51,6 +51,7 @@ type InitOptions struct {
 	Force        bool
 	Now          func() time.Time
 	Resolve      func(string) (Release, error)
+	Verify       func(Release) error
 }
 
 type InitResult struct {
@@ -114,6 +115,11 @@ func Init(options InitOptions) (InitResult, error) {
 		}
 		if !fixedImage(release.ControlImage) || !fixedImage(release.CoreImage) {
 			return InitResult{}, errors.New("release manifest images must use fixed sha256 digests")
+		}
+		if options.Verify != nil {
+			if err := options.Verify(release); err != nil {
+				return InitResult{}, fmt.Errorf("verify release %s: %w", version, err)
+			}
 		}
 		options.ControlImage = release.ControlImage
 		options.CoreImage = release.CoreImage

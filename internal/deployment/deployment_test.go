@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,24 @@ func TestInitRejectsMutableReleaseImages(t *testing.T) {
 	}
 	if _, err := Init(InitOptions{Dir: filepath.Join(t.TempDir(), "barq"), Domain: "db.example.com", Version: "v1", Resolve: resolver}); err == nil || !strings.Contains(err.Error(), "fixed sha256") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInitRejectsUnsignedReleaseBeforeWritingSecrets(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "barq")
+	digest := strings.Repeat("a", 64)
+	_, err := Init(InitOptions{
+		Dir: dir, Domain: "db.example.com", Version: "v1",
+		Resolve: func(version string) (Release, error) {
+			return Release{Version: version, ControlImage: "control@sha256:" + digest, CoreImage: "core@sha256:" + digest}, nil
+		},
+		Verify: func(Release) error { return errors.New("signature not found") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "signature not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed verification wrote deployment files: %v", statErr)
 	}
 }
 

@@ -17,6 +17,7 @@ env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
   BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
   RESTIC_VERSION: 0.19.1
+  COSIGN_VERSION: 3.1.1
 
 jobs:
   server:
@@ -205,6 +206,15 @@ jobs:
           bzip2 --decompress --stdout "/tmp/${restic}" > /tmp/restic
           chmod 0755 /tmp/restic
           /tmp/restic version
+
+          cosign="cosign-linux-amd64"
+          cosign_base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"
+          curl --fail --silent --show-error --location --output "/tmp/${cosign}" "${cosign_base}/${cosign}"
+          curl --fail --silent --show-error --location --output /tmp/cosign-checksums "${cosign_base}/cosign_checksums.txt"
+          (cd /tmp && grep "  ${cosign}$" cosign-checksums | sha256sum --check --strict -)
+          mv "/tmp/${cosign}" /tmp/cosign
+          chmod 0755 /tmp/cosign
+          /tmp/cosign version
 
       - name: Start S3-compatible test server
         env:

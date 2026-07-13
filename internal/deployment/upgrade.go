@@ -20,6 +20,7 @@ type UpgradeOptions struct {
 	Stderr  io.Writer
 	Resolve func(string) (Release, error)
 	Now     func() time.Time
+	Verify  func(Release) error
 }
 
 type UpgradeResult struct {
@@ -51,6 +52,11 @@ func Upgrade(ctx context.Context, options UpgradeOptions) (UpgradeResult, error)
 	}
 	if err := validateReleaseCompatibility(release); err != nil {
 		return UpgradeResult{}, err
+	}
+	if options.Verify != nil {
+		if err := options.Verify(release); err != nil {
+			return UpgradeResult{}, fmt.Errorf("verify release %s: %w", version, err)
+		}
 	}
 	lock, err := acquireMaintenanceLock(dir)
 	if err != nil {
@@ -93,6 +99,9 @@ func Rollback(ctx context.Context, options RollbackOptions) (UpgradeResult, erro
 		return UpgradeResult{}, errors.New("there is no previous release to roll back to")
 	}
 	target := manifest.Previous[len(manifest.Previous)-1]
+	if !fixedImage(target.ControlImage) || !fixedImage(target.CoreImage) {
+		return UpgradeResult{}, errors.New("cannot safely roll back to mutable development images")
+	}
 	if err := validateReleaseCompatibility(target); err != nil {
 		return UpgradeResult{}, err
 	}
