@@ -13,7 +13,7 @@ permissions:
 
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
-  BARQ_CORE_COMMIT: b738edc2321f16b12fd16971a31912f0dfe4aa88
+  BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
   CONTROL_IMAGE: ghcr.io/barqdb/barq-control-plane
   CORE_IMAGE: ghcr.io/barqdb/barq-core
 
