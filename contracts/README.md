@@ -22,6 +22,20 @@ must run the JSON fixtures in `fixtures/`.
 - Requests may carry `request_id`; writes may carry `idempotency_key`.
 - Unknown JSON fields are rejected.
 
+## Live FLX rules
+
+Rules use normal Barq predicates. `$user.id` is the device JWT subject. A
+missing object type is denied. Rule changes use an expected revision and the
+next target revision, so stale writes fail and retries are safe.
+
+Read queries are combined with the device subscription. Write queries check
+the new row on create, both rows on update, and the old row on delete. Rules
+may use fields, scalar collections, and embedded data. Cross-table traversal,
+backlinks, sorting, limits, distinct, and vector ordering are rejected.
+
+The active revision is stored in hidden, non-synced Barq metadata. It never
+appears in the change feed and never triggers webhooks.
+
 ## Schema manifests
 
 Schema changes in v1 are additive. `objects[].name` maps to the Barq

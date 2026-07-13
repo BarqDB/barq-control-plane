@@ -21,6 +21,7 @@
       <span id="system-version">CORE —</span>
     </div>
     <nav>
+      <a href="#sync-rules-workspace">SYNC RULES</a>
       <a href="#access-workspace" id="access-nav" hidden>ACCESS</a>
       <a href="/docs/" target="_blank" rel="noreferrer">API DOCS ↗</a>
       <button class="text-button" id="credentials-button" type="button">ACCESS KEY</button>
@@ -55,6 +56,55 @@
       <div class="empty" id="empty-state" hidden>
         <span>00</span><h3>No routes found</h3><p>Register the first outbound signal from Barq.</p>
         <button class="button" id="empty-new-hook" type="button">REGISTER WEBHOOK</button>
+      </div>
+    </section>
+
+    <section class="workspace rules-workspace reveal delay-2" id="sync-rules-workspace">
+      <div class="section-heading">
+        <div><p class="eyebrow">DEVICE DATA BOUNDARY</p><h2>Sync rules</h2></div>
+        <p class="section-note">A device sees its subscription cut down by these rules. Tables with no rule are denied.</p>
+      </div>
+
+      <div class="rule-scope-bar">
+        <label>Tenant<input id="rules-tenant" list="rules-tenant-list" placeholder="acme" autocomplete="off"><datalist id="rules-tenant-list"></datalist></label>
+        <label>Database<input id="rules-database" placeholder="main" value="main" autocomplete="off"></label>
+        <button class="button primary" id="load-rules" type="button">LOAD DATABASE</button>
+        <div class="rule-revision"><span>ACTIVE REVISION</span><strong id="rules-revision">—</strong><small id="rules-hash">not loaded</small></div>
+      </div>
+
+      <div class="rule-layout">
+        <div class="rule-editor">
+          <div class="rule-toolbar">
+            <div><span>RULE SET</span><small id="rules-schema-version">SCHEMA —</small></div>
+            <label>Add object<select id="rule-object-picker"><option value="">SELECT OBJECT</option></select></label>
+            <button class="button" id="add-rule" type="button">+ ADD RULE</button>
+          </div>
+          <div id="rule-list" class="rule-list">
+            <div class="rule-blank">LOAD A TENANT DATABASE TO EDIT ITS RULES</div>
+          </div>
+          <div class="rule-actions">
+            <p id="rule-plan-result">Plan checks every query without changing live devices.</p>
+            <button class="button" id="plan-rules" type="button" disabled>PLAN CHANGE</button>
+            <button class="button primary" id="apply-rules" type="button" disabled>APPLY LIVE</button>
+          </div>
+        </div>
+
+        <aside class="rule-side">
+          <section>
+            <header><span>TEST ONE ROW</span><small>Uses a real object in BarqDB</small></header>
+            <div class="rule-test-form">
+              <label>User ID<input id="rule-test-user" placeholder="user-123"></label>
+              <label>Object<select id="rule-test-object"><option value="">SELECT OBJECT</option></select></label>
+              <label>Primary key<input id="rule-test-key" placeholder='"order-1"'></label>
+              <button class="button" id="test-rules" type="button" disabled>TEST CURRENT DRAFT</button>
+              <output id="rule-test-result">No test run.</output>
+            </div>
+          </section>
+          <section>
+            <header><span>REVISION HISTORY</span><small>Restore makes a new revision</small></header>
+            <div id="rule-history" class="rule-history"><p>Nothing loaded.</p></div>
+          </section>
+        </aside>
       </div>
     </section>
 
@@ -131,7 +181,7 @@
         <label class="wide">Label<input name="label" required maxlength="120" placeholder="Production API"></label>
         <label>Tenant<select name="tenant" id="key-tenant" required></select></label>
         <label>Database<input name="database" required value="main" placeholder="main"><small>Use * for every registered database.</small></label>
-        <label class="wide">Actions<input name="actions" required value="read, write" placeholder="read, write"><small>read, write, schema:admin, webhooks:admin, operations:read, tenants:admin, keys:admin, or *.</small></label>
+        <label class="wide">Actions<input name="actions" required value="read, write" placeholder="read, write"><small>read, write, sync:admin, schema:admin, webhooks:admin, operations:read, tenants:admin, keys:admin, or *.</small></label>
       </div>
       <footer><button class="button" value="cancel" formmethod="dialog">CANCEL</button><button class="button primary" type="submit">CREATE KEY</button></footer>
     </form>

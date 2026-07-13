@@ -263,12 +263,18 @@ func TestDoctorReportsDeploymentHealth(t *testing.T) {
 	dir := initTestDeployment(t)
 	runner := &recordingRunner{}
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body := `{"status":"ok"}`
+		body := `{"status":"ok","version":"test","capabilities":["flx_rules"]}`
 		if request.URL.Path == "/v1/operations/health" {
 			if request.Header.Get("Authorization") == "" {
 				t.Fatal("operations health did not use the deployment API key")
 			}
 			body = `{"status":"ok","pending":0,"retrying":0,"dead_transform":0,"dead_delivery":0}`
+		}
+		if strings.HasSuffix(request.URL.Path, "/sync-rules") {
+			if request.Header.Get("Authorization") == "" {
+				t.Fatal("sync-rule API check did not use the deployment API key")
+			}
+			body = `{"revision":0,"hash":"","rules":[]}`
 		}
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
@@ -276,7 +282,7 @@ func TestDoctorReportsDeploymentHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasCheck(checks, "disk space", CheckPass) || !hasCheck(checks, "public health", CheckPass) || !hasCheck(checks, "webhook queues", CheckPass) || !hasCheck(checks, "dead letters", CheckPass) || !hasCheck(checks, "backups", CheckWarn) {
+	if !hasCheck(checks, "disk space", CheckPass) || !hasCheck(checks, "public health", CheckPass) || !hasCheck(checks, "FLX sync", CheckPass) || !hasCheck(checks, "sync-rule API", CheckPass) || !hasCheck(checks, "webhook queues", CheckPass) || !hasCheck(checks, "dead letters", CheckPass) || !hasCheck(checks, "backups", CheckWarn) {
 		t.Fatalf("unexpected checks: %+v", checks)
 	}
 }

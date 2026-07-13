@@ -13,6 +13,7 @@ Start the C++ process from the isolated Core worktree:
 
 ```sh
 barq-server --root-dir ./data --allow-unsigned-tokens \
+  --enable-flx \
   --internal-api-secret local-secret
 ```
 
@@ -34,8 +35,11 @@ global development key.
 The control console is at `/control/`; embedded Swagger UI is at `/docs/`.
 Both ship inside the server binary and need no CDN. A global admin can register
 tenants, add logical databases, create scoped service keys, rotate keys, and
-revoke keys from the control console. New key values are shown once. Disabling
-a tenant stops its scoped keys and webhook polling without deleting Barq data.
+revoke keys from the control console. The Sync rules page reads the live Barq
+schema, plans normal Barq predicates, applies them without disconnecting
+devices, tests one stored row, and restores old revisions. New key values are
+shown once. Disabling a tenant stops its scoped keys and webhook polling
+without deleting Barq data.
 
 ## Self-hosted deployment
 
@@ -130,6 +134,9 @@ The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
 - a 3072-bit RSA key pair for signed device sync tokens.
 
 Only ports 80 and 443 are published. The Core internal API is not exposed.
+Generated Docker deployments enable FLX sync by default. Standalone Core keeps
+FLX off unless `--enable-flx` is passed. `barqctl doctor` checks both the Core
+capability and the live rule API.
 The generated `.env` and JWT private key use file mode `0600`.
 Each domain gets stable Compose project, volume, and network names. The default
 bundle owns public ports 80 and 443, so it expects one public client stack per
@@ -169,9 +176,10 @@ the Docker context:
 docker build -f server/Dockerfile -t barq-server .
 ```
 
-CI checks out this repository as `server/` and the pinned `barq-go` commit as
-`client/barq-go/`. It runs race tests, vet, a native server build, and a full
-Docker build on every pull request and push to `main`.
+CI checks out this repository as `server/`, plus the pinned `barq-go` and Core
+commits. It runs race tests, vet, native builds, both Docker builds, and a
+two-container FLX apply-and-restart test on every pull request and push to
+`main`.
 
 ## Test
 
@@ -184,10 +192,12 @@ use the fixtures under `contracts/fixtures`.
 
 ## Current Core integration
 
-The isolated C++ branch currently implements `health`, additive schema
-plan/apply, and object create/read/patch/delete. API writes use server sync
-history, so synced clients can download them. Control state belongs to Go and
-is opened locally with `barq-go`.
+The isolated C++ branch implements `health`, additive schema plan/apply, object
+create/read/patch/delete, and live FLX rule read/plan/apply/test. Rules are
+stored inside each Barq database, use immutable revision snapshots while writes
+run, and re-filter connected devices without a reconnect. API writes use server
+sync history, so synced clients can download them. Control state belongs to Go
+and is opened locally with `barq-go`.
 
 `query`, `batch`, device-origin `changes`, and event `materialize` are still the
 next Core slice. Until `changes` is implemented, Core does not advertise that
@@ -196,9 +206,10 @@ device writes can trigger production webhooks yet.
 
 ## Development boundary
 
-This repository does not write to the main Core checkout. Core integration
-lives only in `../worktrees/core-server` on `feature/server-data-plane`. There
-is no fake runtime data plane; `BARQ_DATA_PLANE_URL` is required.
+This repository does not write to the main Core checkout. Live FLX integration
+lives only in `../worktrees/core-flx-rules` on `feature/live-flx-rules`. The old
+`core-server` worktree stays untouched. There is no fake runtime data plane;
+`BARQ_DATA_PLANE_URL` is required.
 
 Go opens `data/_system/control.barq` directly with
 [`github.com/BarqDB/barq-go`](https://github.com/BarqDB/barq-go). Webhook

@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -35,6 +36,26 @@ func TestPublicOpenAPIParsesAndAllLocalReferencesResolve(t *testing.T) {
 		}
 	}
 	walk(document)
+}
+
+func TestPrivateOpenAPIParsesAndHasLiveFLXRoutes(t *testing.T) {
+	data, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatalf("parse private OpenAPI: %v", err)
+	}
+	paths, ok := document["paths"].(map[string]any)
+	if !ok {
+		t.Fatal("private OpenAPI paths are missing")
+	}
+	for _, path := range []string{"/internal/v1/schema/read", "/internal/v1/flx/rules/read", "/internal/v1/flx/rules/plan", "/internal/v1/flx/rules/apply", "/internal/v1/flx/rules/test"} {
+		if _, ok := paths[path]; !ok {
+			t.Errorf("private OpenAPI is missing %s", path)
+		}
+	}
 }
 
 func TestPublicServiceKeySchemaCannotExposeDigest(t *testing.T) {

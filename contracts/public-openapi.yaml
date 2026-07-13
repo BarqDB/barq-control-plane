@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Barq Server API
-  version: 0.3.0
+  version: 0.4.0
   description: Public tenant data and webhook control API for BarqDB.
 servers:
   - url: /
@@ -212,6 +212,98 @@ paths:
           application/json:
             schema: {$ref: "#/components/schemas/SchemaRequest"}
       responses: {"200": {description: Schema plan or applied migration.}, "409": {description: Unsafe migration.}}
+  /v1/tenants/{tenant}/databases/{database}/schema:
+    get:
+      summary: Read schema fields for the sync-rule editor
+      operationId: readSchema
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      responses:
+        "200":
+          description: Active database schema.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Schema"}
+  /v1/tenants/{tenant}/databases/{database}/sync-rules:
+    get:
+      summary: Read the active device FLX sync rules
+      operationId: readSyncRules
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      responses:
+        "200":
+          description: Active immutable rule revision.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/FLXRuleSet"}
+    put:
+      summary: Persist and activate a new device FLX sync rule revision
+      operationId: applySyncRules
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRuleChange"}
+      responses:
+        "200": {description: Rules persisted and active.}
+        "409": {description: The expected revision is stale.}
+  /v1/tenants/{tenant}/databases/{database}/sync-rules:plan:
+    post:
+      summary: Validate and preview a device FLX sync rule revision
+      operationId: planSyncRules
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRuleChange"}
+      responses: {"200": {description: Valid rule plan.}, "400": {description: Unsupported or invalid query.}}
+  /v1/tenants/{tenant}/databases/{database}/sync-rules:test:
+    post:
+      summary: Test active or candidate rules against one stored object
+      operationId: testSyncRules
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRuleTest"}
+      responses: {"200": {description: Read and write decision for the object.}}
+  /v1/tenants/{tenant}/databases/{database}/sync-rules/revisions:
+    get:
+      summary: List immutable sync-rule revision history
+      operationId: listSyncRuleRevisions
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+      responses: {"200": {description: Newest revision first.}}
+  /v1/tenants/{tenant}/databases/{database}/sync-rules/revisions/{revision}:restore:
+    post:
+      summary: Restore old rules as a new revision
+      operationId: restoreSyncRuleRevision
+      parameters:
+        - {$ref: "#/components/parameters/tenant"}
+        - {$ref: "#/components/parameters/database"}
+        - {$ref: "#/components/parameters/revision"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision]
+              properties: {expected_revision: {type: integer, minimum: 0}}
+      responses: {"200": {description: Old rules restored as a new active revision.}, "409": {description: The expected revision is stale.}}
   /v1/webhooks:
     get:
       summary: List webhooks
@@ -286,6 +378,7 @@ components:
     type: {name: type, in: path, required: true, schema: {type: string}}
     primaryKey: {name: primaryKey, in: path, required: true, schema: {type: string}}
     id: {name: id, in: path, required: true, schema: {type: string}}
+    revision: {name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}
   schemas:
     Tenant:
       type: object
@@ -414,3 +507,62 @@ components:
       properties:
         version: {type: integer, minimum: 1}
         manifest: {type: object}
+    SchemaProperty:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name: {type: string}
+        type: {type: string}
+        nullable: {type: boolean}
+        primary_key: {type: boolean}
+        collection: {type: string}
+        target: {type: string}
+        embedded: {type: boolean}
+    SchemaObject:
+      type: object
+      additionalProperties: false
+      required: [name, properties]
+      properties:
+        name: {type: string}
+        properties: {type: array, items: {$ref: "#/components/schemas/SchemaProperty"}}
+    Schema:
+      type: object
+      additionalProperties: false
+      required: [version, objects]
+      properties:
+        version: {type: integer, minimum: 0}
+        objects: {type: array, items: {$ref: "#/components/schemas/SchemaObject"}}
+    FLXRule:
+      type: object
+      additionalProperties: false
+      required: [object_type, read, write]
+      properties:
+        object_type: {type: string, minLength: 1}
+        read: {type: string, description: Normal Barq predicate. Missing object types are denied.}
+        write: {type: string, description: Checked on create, old and new update rows, and old delete rows.}
+    FLXRuleSet:
+      type: object
+      additionalProperties: false
+      required: [revision, hash, rules]
+      properties:
+        revision: {type: integer, minimum: 0}
+        hash: {type: string}
+        source: {type: string}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}
+    FLXRuleChange:
+      type: object
+      additionalProperties: false
+      required: [expected_revision, rules]
+      properties:
+        expected_revision: {type: integer, minimum: 0}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}
+    FLXRuleTest:
+      type: object
+      additionalProperties: false
+      required: [user_id, object_type, primary_key]
+      properties:
+        user_id: {type: string}
+        object_type: {type: string}
+        primary_key: {}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}

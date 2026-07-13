@@ -1,0 +1,17 @@
+{
+  "revision": 1,
+  "hash": "a43102ec08be2d8a24f2711fc574272394cb23fa61dc8d1d345f7446a9a21737",
+  "source": "database",
+  "rules": [
+    {
+      "object_type": "Order",
+      "read": "owner_id == $user.id",
+      "write": "owner_id == $user.id"
+    }
+  ],
+  "current_revision": 0,
+  "target_revision": 1,
+  "changes": ["allow object type Order"],
+  "applied": true,
+  "refreshed_sessions": 0
+}

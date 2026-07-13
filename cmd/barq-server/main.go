@@ -18,6 +18,7 @@ import (
 	"github.com/barqdb/barq-server/internal/auth"
 	"github.com/barqdb/barq-server/internal/control"
 	"github.com/barqdb/barq-server/internal/dataplane"
+	"github.com/barqdb/barq-server/internal/syncrules"
 	"github.com/barqdb/barq-server/internal/transforms"
 	"github.com/barqdb/barq-server/internal/webhooks"
 )
@@ -68,8 +69,16 @@ func main() {
 		os.Exit(1)
 	}
 	dispatcher := webhooks.NewDispatcher(data, store, runtime, webhooks.NewWebhookHTTPClient(allowPrivate))
+	ruleService := syncrules.New(data, store)
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := ruleService.Reconcile(reconcileCtx); err != nil {
+		cancelReconcile()
+		logger.Error("reconcile sync rules", "error", err)
+		os.Exit(1)
+	}
+	cancelReconcile()
 
-	handler := api.New(data, hookService, keys).Handler()
+	handler := api.New(data, hookService, keys, ruleService).Handler()
 	address := os.Getenv("BARQ_LISTEN_ADDR")
 	if address == "" {
 		address = "127.0.0.1:8080"

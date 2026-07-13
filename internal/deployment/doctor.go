@@ -111,14 +111,27 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 		if requestErr != nil {
 			checks = append(checks, Check{Name: "public health", Status: CheckFail, Detail: requestErr.Error()})
 		} else {
-			_ = response.Body.Close()
 			if response.StatusCode >= 200 && response.StatusCode < 300 {
+				var health struct {
+					Capabilities []string `json:"capabilities"`
+				}
+				decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&health)
+				_ = response.Body.Close()
 				checks = append(checks, Check{Name: "public health", Status: CheckPass, Detail: response.Status})
+				if decodeErr != nil {
+					checks = append(checks, Check{Name: "FLX sync", Status: CheckFail, Detail: "invalid health response: " + decodeErr.Error()})
+				} else if stringListContains(health.Capabilities, "flx_rules") {
+					checks = append(checks, Check{Name: "FLX sync", Status: CheckPass, Detail: "enabled"})
+				} else {
+					checks = append(checks, Check{Name: "FLX sync", Status: CheckFail, Detail: "Core does not advertise the flx_rules API"})
+				}
 			} else {
+				_ = response.Body.Close()
 				checks = append(checks, Check{Name: "public health", Status: CheckFail, Detail: response.Status})
 			}
 		}
 	}
+	checks = append(checks, syncRuleAPICheck(ctx, client, dir, manifest.URL))
 	checks = append(checks, webhookHealthCheck(ctx, client, dir, manifest.URL, now)...)
 
 	backupTime, backupPath := newestBackup(filepath.Join(dir, "backups"))
@@ -140,6 +153,46 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 		}
 	}
 	return checks, nil
+}
+
+func syncRuleAPICheck(ctx context.Context, client *http.Client, dir, baseURL string) Check {
+	environment := filepath.Join(dir, ".env")
+	apiKey, err := environmentValue(environment, "BARQ_API_KEY")
+	if err != nil {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: err.Error()}
+	}
+	tenant, err := environmentValue(environment, "BARQ_TENANT")
+	if err != nil {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: err.Error()}
+	}
+	database, err := environmentValue(environment, "BARQ_DATABASE")
+	if err != nil {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: err.Error()}
+	}
+	path := fmt.Sprintf("%s/v1/tenants/%s/databases/%s/sync-rules", baseURL, tenant, database)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: err.Error()}
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	response, err := client.Do(request)
+	if err != nil {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: err.Error()}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return Check{Name: "sync-rule API", Status: CheckFail, Detail: response.Status}
+	}
+	return Check{Name: "sync-rule API", Status: CheckPass, Detail: "available"}
+}
+
+func stringListContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func remoteBackupChecks(dir string, now time.Time) []Check {

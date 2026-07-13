@@ -60,6 +60,12 @@ func (h *HTTPDataPlane) ExecuteBatch(ctx context.Context, input BatchRequest) (B
 	return result, err
 }
 
+func (h *HTTPDataPlane) ReadSchema(ctx context.Context, input SchemaReadRequest) (Schema, error) {
+	var result Schema
+	err := h.do(ctx, http.MethodPost, "/internal/v1/schema/read", input, &result)
+	return result, err
+}
+
 func (h *HTTPDataPlane) PlanSchema(ctx context.Context, input SchemaRequest) (SchemaResult, error) {
 	var result SchemaResult
 	err := h.do(ctx, http.MethodPost, "/internal/v1/schema/plan", input, &result)
@@ -69,6 +75,30 @@ func (h *HTTPDataPlane) PlanSchema(ctx context.Context, input SchemaRequest) (Sc
 func (h *HTTPDataPlane) ApplySchema(ctx context.Context, input SchemaRequest) (SchemaResult, error) {
 	var result SchemaResult
 	err := h.do(ctx, http.MethodPost, "/internal/v1/schema/apply", input, &result)
+	return result, err
+}
+
+func (h *HTTPDataPlane) ReadFLXRules(ctx context.Context, input FLXRulesReadRequest) (FLXRuleSet, error) {
+	var result FLXRuleSet
+	err := h.do(ctx, http.MethodPost, "/internal/v1/flx/rules/read", input, &result)
+	return result, err
+}
+
+func (h *HTTPDataPlane) PlanFLXRules(ctx context.Context, input FLXRulesChangeRequest) (FLXRulesResult, error) {
+	var result FLXRulesResult
+	err := h.do(ctx, http.MethodPost, "/internal/v1/flx/rules/plan", input, &result)
+	return result, err
+}
+
+func (h *HTTPDataPlane) ApplyFLXRules(ctx context.Context, input FLXRulesChangeRequest) (FLXRulesResult, error) {
+	var result FLXRulesResult
+	err := h.do(ctx, http.MethodPost, "/internal/v1/flx/rules/apply", input, &result)
+	return result, err
+}
+
+func (h *HTTPDataPlane) TestFLXRules(ctx context.Context, input FLXRulesTestRequest) (FLXRulesTestResult, error) {
+	var result FLXRulesTestResult
+	err := h.do(ctx, http.MethodPost, "/internal/v1/flx/rules/test", input, &result)
 	return result, err
 }
 

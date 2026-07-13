@@ -1,5 +1,5 @@
 {
   "status": "ok",
   "version": "fixture-v1",
-  "capabilities": ["crud", "batch", "schema", "changes", "materialize"]
+  "capabilities": ["crud", "batch", "schema", "schema_read", "flx_rules", "changes", "materialize"]
 }

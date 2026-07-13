@@ -1,0 +1,7 @@
+{
+  "request_id": "rules-test-1",
+  "scope": {"tenant": "tenant-a", "database": "main"},
+  "user_id": "user-1",
+  "object_type": "Order",
+  "primary_key": "order-1"
+}

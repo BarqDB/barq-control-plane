@@ -86,11 +86,88 @@ type SchemaRequest struct {
 	Manifest  json.RawMessage `json:"manifest"`
 }
 
+type SchemaReadRequest struct {
+	RequestID string `json:"request_id,omitempty"`
+	Scope     Scope  `json:"scope"`
+}
+
+type Schema struct {
+	Version uint64         `json:"version"`
+	Objects []SchemaObject `json:"objects"`
+}
+
+type SchemaObject struct {
+	Name       string           `json:"name"`
+	Properties []SchemaProperty `json:"properties"`
+}
+
+type SchemaProperty struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Nullable   bool   `json:"nullable,omitempty"`
+	PrimaryKey bool   `json:"primary_key,omitempty"`
+	Collection string `json:"collection,omitempty"`
+	Target     string `json:"target,omitempty"`
+	Embedded   bool   `json:"embedded,omitempty"`
+}
+
 type SchemaResult struct {
 	CurrentVersion uint64   `json:"current_version"`
 	TargetVersion  uint64   `json:"target_version"`
 	Changes        []string `json:"changes,omitempty"`
 	Applied        bool     `json:"applied"`
+}
+
+type FLXRule struct {
+	ObjectType string `json:"object_type"`
+	Read       string `json:"read"`
+	Write      string `json:"write"`
+}
+
+type FLXRuleSet struct {
+	Revision uint64    `json:"revision"`
+	Hash     string    `json:"hash"`
+	Source   string    `json:"source,omitempty"`
+	Rules    []FLXRule `json:"rules"`
+}
+
+type FLXRulesReadRequest struct {
+	RequestID string `json:"request_id,omitempty"`
+	Scope     Scope  `json:"scope"`
+}
+
+type FLXRulesChangeRequest struct {
+	RequestID        string    `json:"request_id,omitempty"`
+	Scope            Scope     `json:"scope"`
+	ExpectedRevision uint64    `json:"expected_revision"`
+	TargetRevision   uint64    `json:"target_revision"`
+	Rules            []FLXRule `json:"rules"`
+}
+
+type FLXRulesResult struct {
+	FLXRuleSet
+	CurrentRevision   uint64   `json:"current_revision"`
+	TargetRevision    uint64   `json:"target_revision"`
+	Changes           []string `json:"changes,omitempty"`
+	Applied           bool     `json:"applied"`
+	RefreshedSessions int      `json:"refreshed_sessions,omitempty"`
+}
+
+type FLXRulesTestRequest struct {
+	RequestID  string    `json:"request_id,omitempty"`
+	Scope      Scope     `json:"scope"`
+	UserID     string    `json:"user_id"`
+	ObjectType string    `json:"object_type"`
+	PrimaryKey any       `json:"primary_key"`
+	Rules      []FLXRule `json:"rules,omitempty"`
+}
+
+type FLXRulesTestResult struct {
+	ObjectType string `json:"object_type"`
+	Found      bool   `json:"found"`
+	Configured bool   `json:"configured"`
+	CanRead    bool   `json:"can_read"`
+	CanWrite   bool   `json:"can_write"`
 }
 
 type ChangeEvent = model.ChangeEvent

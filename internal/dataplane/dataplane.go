@@ -39,8 +39,13 @@ type DataPlane interface {
 	WriteObject(context.Context, WriteRequest) (WriteResult, error)
 	QueryObjects(context.Context, QueryRequest) (QueryResult, error)
 	ExecuteBatch(context.Context, BatchRequest) (BatchResult, error)
+	ReadSchema(context.Context, SchemaReadRequest) (Schema, error)
 	PlanSchema(context.Context, SchemaRequest) (SchemaResult, error)
 	ApplySchema(context.Context, SchemaRequest) (SchemaResult, error)
+	ReadFLXRules(context.Context, FLXRulesReadRequest) (FLXRuleSet, error)
+	PlanFLXRules(context.Context, FLXRulesChangeRequest) (FLXRulesResult, error)
+	ApplyFLXRules(context.Context, FLXRulesChangeRequest) (FLXRulesResult, error)
+	TestFLXRules(context.Context, FLXRulesTestRequest) (FLXRulesTestResult, error)
 	ReadChanges(context.Context, ChangesRequest) (ChangesResult, error)
 	MaterializeEvent(context.Context, MaterializeRequest) (EventContext, error)
 }

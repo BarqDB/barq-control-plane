@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/barqdb/barq-server/contracts"
 	"github.com/barqdb/barq-server/internal/auth"
 	"github.com/barqdb/barq-server/internal/console"
 	"github.com/barqdb/barq-server/internal/dataplane"
+	"github.com/barqdb/barq-server/internal/syncrules"
 	"github.com/barqdb/barq-server/internal/webhooks"
 	"github.com/swaggest/swgui/v5"
 )
@@ -20,10 +23,11 @@ type Server struct {
 	data  dataplane.DataPlane
 	hooks *webhooks.Service
 	keys  *auth.Manager
+	rules *syncrules.Service
 }
 
-func New(data dataplane.DataPlane, hooks *webhooks.Service, keys *auth.Manager) *Server {
-	return &Server{data: data, hooks: hooks, keys: keys}
+func New(data dataplane.DataPlane, hooks *webhooks.Service, keys *auth.Manager, rules *syncrules.Service) *Server {
+	return &Server{data: data, hooks: hooks, keys: keys, rules: rules}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -307,8 +311,16 @@ func (s *Server) dataRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	scope := dataplane.Scope{Tenant: tenant, Database: database}
+	if len(parts) == 5 && parts[4] == "schema" && r.Method == http.MethodGet {
+		s.readSchema(w, r, scope)
+		return
+	}
 	if len(parts) == 5 && strings.HasPrefix(parts[4], "schema:") && r.Method == http.MethodPost {
 		s.schema(w, r, scope, strings.TrimPrefix(parts[4], "schema:"))
+		return
+	}
+	if len(parts) >= 5 && (parts[4] == "sync-rules" || strings.HasPrefix(parts[4], "sync-rules:")) {
+		s.syncRuleRoutes(w, r, scope, parts[4:])
 		return
 	}
 	if len(parts) < 6 || parts[4] != "objects" {
@@ -329,6 +341,149 @@ func (s *Server) dataRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+}
+
+func (s *Server) readSchema(w http.ResponseWriter, r *http.Request, scope dataplane.Scope) {
+	if err := auth.Authorize(r.Context(), scope, "sync:admin"); err != nil {
+		writeError(w, err)
+		return
+	}
+	schema, err := s.rules.Schema(r.Context(), scope, requestID(r.Context()))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, schema)
+}
+
+func (s *Server) syncRuleRoutes(w http.ResponseWriter, r *http.Request, scope dataplane.Scope, parts []string) {
+	if err := auth.Authorize(r.Context(), scope, "sync:admin"); err != nil {
+		writeError(w, err)
+		return
+	}
+	if len(parts) == 1 {
+		switch {
+		case parts[0] == "sync-rules" && r.Method == http.MethodGet:
+			current, err := s.rules.Current(r.Context(), scope, requestID(r.Context()))
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			setRuleHeaders(w, current.Revision, current.Hash)
+			writeJSON(w, http.StatusOK, current)
+		case parts[0] == "sync-rules:plan" && r.Method == http.MethodPost:
+			input, ok := s.decodeRuleApply(w, r)
+			if !ok {
+				return
+			}
+			result, err := s.rules.Plan(r.Context(), scope, input)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		case parts[0] == "sync-rules:test" && r.Method == http.MethodPost:
+			var input struct {
+				UserID     string              `json:"user_id"`
+				ObjectType string              `json:"object_type"`
+				PrimaryKey any                 `json:"primary_key"`
+				Rules      []dataplane.FLXRule `json:"rules,omitempty"`
+			}
+			if err := decodeJSON(r, &input); err != nil {
+				writeError(w, err)
+				return
+			}
+			result, err := s.rules.Test(r.Context(), scope, dataplane.FLXRulesTestRequest{
+				RequestID: requestID(r.Context()), UserID: input.UserID, ObjectType: input.ObjectType,
+				PrimaryKey: input.PrimaryKey, Rules: input.Rules,
+			})
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+		case parts[0] == "sync-rules" && r.Method == http.MethodPut:
+			input, ok := s.decodeRuleApply(w, r)
+			if !ok {
+				return
+			}
+			result, err := s.rules.Apply(r.Context(), scope, input)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			setRuleHeaders(w, result.Revision, result.Hash)
+			writeJSON(w, http.StatusOK, result)
+		default:
+			writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+		}
+		return
+	}
+	if len(parts) == 2 && parts[0] == "sync-rules" && parts[1] == "revisions" && r.Method == http.MethodGet {
+		history, err := s.rules.History(r.Context(), scope)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"revisions": history})
+		return
+	}
+	if len(parts) == 3 && parts[0] == "sync-rules" && parts[1] == "revisions" && strings.HasSuffix(parts[2], ":restore") && r.Method == http.MethodPost {
+		revision, err := strconv.ParseUint(strings.TrimSuffix(parts[2], ":restore"), 10, 64)
+		if err != nil {
+			writeError(w, &dataplane.Error{Code: dataplane.CodeInvalid, Message: "invalid sync-rule revision"})
+			return
+		}
+		var body struct {
+			ExpectedRevision uint64 `json:"expected_revision"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeError(w, err)
+			return
+		}
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		result, err := s.rules.Restore(r.Context(), scope, revision, syncrules.ApplyInput{
+			ExpectedRevision: body.ExpectedRevision, RequestID: ruleOperationID(r), Actor: principal.ID,
+		})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		setRuleHeaders(w, result.Revision, result.Hash)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+}
+
+func (s *Server) decodeRuleApply(w http.ResponseWriter, r *http.Request) (syncrules.ApplyInput, bool) {
+	var body struct {
+		ExpectedRevision uint64              `json:"expected_revision"`
+		Rules            []dataplane.FLXRule `json:"rules"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, err)
+		return syncrules.ApplyInput{}, false
+	}
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	return syncrules.ApplyInput{
+		ExpectedRevision: body.ExpectedRevision, Rules: body.Rules,
+		RequestID: ruleOperationID(r), Actor: principal.ID,
+	}, true
+}
+
+func ruleOperationID(r *http.Request) string {
+	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
+		return key
+	}
+	return requestID(r.Context())
+}
+
+func setRuleHeaders(w http.ResponseWriter, revision uint64, hash string) {
+	w.Header().Set("X-Barq-Rule-Revision", fmt.Sprintf("%d", revision))
+	if hash != "" {
+		w.Header().Set("ETag", `"`+hash+`"`)
+	}
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request, scope dataplane.Scope, objectType string) {

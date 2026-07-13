@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/barqdb/barq-server/internal/dataplane"
@@ -34,6 +36,27 @@ func TestHTTPDataPlaneUsesVersionedRouteAndSecret(t *testing.T) {
 	})
 	if err != nil || result.Cursor != 7 {
 		t.Fatalf("unexpected result: %+v %v", result, err)
+	}
+}
+
+func TestFLXContractFixturesMatchGoTypes(t *testing.T) {
+	fixtures := []struct {
+		name   string
+		target any
+	}{
+		{"flx-rules.apply.request.json", &dataplane.FLXRulesChangeRequest{}},
+		{"flx-rules.apply.response.json", &dataplane.FLXRulesResult{}},
+		{"flx-rules.test.request.json", &dataplane.FLXRulesTestRequest{}},
+		{"flx-rules.test.response.json", &dataplane.FLXRulesTestResult{}},
+	}
+	for _, fixture := range fixtures {
+		data, err := os.ReadFile(filepath.Join("..", "..", "contracts", "fixtures", fixture.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, fixture.target); err != nil {
+			t.Fatalf("%s: %v", fixture.name, err)
+		}
 	}
 }
 

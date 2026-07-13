@@ -1,0 +1,13 @@
+{
+  "request_id": "rules-apply-1",
+  "scope": {"tenant": "tenant-a", "database": "main"},
+  "expected_revision": 0,
+  "target_revision": 1,
+  "rules": [
+    {
+      "object_type": "Order",
+      "read": "owner_id == $user.id",
+      "write": "owner_id == $user.id"
+    }
+  ]
+}

@@ -5,6 +5,11 @@ const state = {
   apiKeys: [],
   health: null,
   selected: null,
+  ruleSchema: null,
+  rules: [],
+  ruleRevision: 0,
+  ruleHash: "",
+  ruleHistory: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -100,6 +105,338 @@ async function loadAccess() {
   }
   $("#access-workspace").hidden = !visible;
   $("#access-nav").hidden = !visible;
+  const tenantList = $("#rules-tenant-list");
+  tenantList.replaceChildren(...state.tenants.map((tenant) => {
+    const option = document.createElement("option");
+    option.value = tenant.id;
+    option.label = tenant.name;
+    return option;
+  }));
+  if (!$("#rules-tenant").value && state.tenants.length) {
+    const tenant = state.tenants.find((item) => item.enabled) || state.tenants[0];
+    $("#rules-tenant").value = tenant.id;
+    $("#rules-database").value = tenant.databases?.[0] || "main";
+  }
+}
+
+function ruleBasePath() {
+  const tenant = $("#rules-tenant").value.trim();
+  const database = $("#rules-database").value.trim();
+  if (!tenant || !database) throw new Error("Tenant and database are required");
+  return `/v1/tenants/${encodeURIComponent(tenant)}/databases/${encodeURIComponent(database)}`;
+}
+
+async function loadRuleWorkspace() {
+  const button = $("#load-rules");
+  button.disabled = true;
+  button.textContent = "LOADING…";
+  try {
+    const base = ruleBasePath();
+    const [schema, current, history] = await Promise.all([
+      api(`${base}/schema`),
+      api(`${base}/sync-rules`),
+      api(`${base}/sync-rules/revisions`),
+    ]);
+    state.ruleSchema = schema;
+    state.rules = (current.rules || []).map((rule) => ({...rule}));
+    state.ruleRevision = current.revision;
+    state.ruleHash = current.hash || "";
+    state.ruleHistory = history.revisions || [];
+    renderRuleWorkspace();
+    toast("Sync rules loaded");
+  } catch (error) {
+    toast(`Sync rules: ${error.message}`, true);
+    setRulePlan(error.message, false);
+  } finally {
+    button.disabled = false;
+    button.textContent = "LOAD DATABASE";
+  }
+}
+
+function renderRuleWorkspace() {
+  $("#rules-revision").textContent = `REV ${state.ruleRevision}`;
+  $("#rules-hash").textContent = state.ruleHash || "CLI fallback";
+  $("#rules-schema-version").textContent = `SCHEMA ${state.ruleSchema?.version ?? "—"}`;
+  $("#plan-rules").disabled = false;
+  $("#apply-rules").disabled = false;
+  $("#test-rules").disabled = false;
+  renderObjectPickers();
+  renderRuleList();
+  renderRuleHistory();
+  setRulePlan("Draft loaded. Plan checks every query without changing live devices.");
+}
+
+function renderObjectPickers() {
+  const objects = state.ruleSchema?.objects || [];
+  const used = new Set(state.rules.map((rule) => rule.object_type));
+  const addPicker = $("#rule-object-picker");
+  const testPicker = $("#rule-test-object");
+  const placeholder = (text) => {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = text;
+    return option;
+  };
+  addPicker.replaceChildren(placeholder("SELECT OBJECT"), ...objects.filter((object) => !used.has(object.name)).map(objectOption));
+  const priorTest = testPicker.value;
+  testPicker.replaceChildren(placeholder("SELECT OBJECT"), ...objects.map(objectOption));
+  if (objects.some((object) => object.name === priorTest)) testPicker.value = priorTest;
+}
+
+function objectOption(object) {
+  const option = document.createElement("option");
+  option.value = object.name;
+  option.textContent = object.name;
+  return option;
+}
+
+function renderRuleList() {
+  const list = $("#rule-list");
+  if (!state.rules.length) {
+    const blank = document.createElement("div");
+    blank.className = "rule-blank";
+    blank.textContent = "NO OBJECT RULES. ALL DEVICE ACCESS IS DENIED.";
+    list.replaceChildren(blank);
+    return;
+  }
+  list.replaceChildren(...state.rules.map(ruleCard));
+}
+
+function ruleCard(rule, index) {
+  const card = document.createElement("article");
+  card.className = "rule-card";
+  const head = document.createElement("div");
+  head.className = "rule-card-head";
+  const title = document.createElement("h3");
+  title.textContent = rule.object_type;
+  const presetLabel = document.createElement("label");
+  presetLabel.textContent = "Preset";
+  const preset = document.createElement("select");
+  [["custom", "CUSTOM QUERY"], ["owner", "OWNED BY USER"], ["public", "PUBLIC READ + WRITE"], ["deny", "DENY ALL"]].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    preset.append(option);
+  });
+  preset.value = rulePreset(rule);
+  preset.addEventListener("change", () => setRulePreset(index, preset.value));
+  presetLabel.append(preset);
+  const remove = document.createElement("button");
+  remove.className = "rule-remove";
+  remove.type = "button";
+  remove.title = "Remove rule and deny this object";
+  remove.textContent = "×";
+  remove.addEventListener("click", () => {
+    state.rules.splice(index, 1);
+    renderObjectPickers();
+    renderRuleList();
+    markRulesChanged();
+  });
+  head.append(title, presetLabel, remove);
+
+  const owner = document.createElement("div");
+  owner.className = "rule-owner";
+  owner.hidden = preset.value !== "owner";
+  const ownerLabel = document.createElement("label");
+  ownerLabel.textContent = "Owner field";
+  const ownerSelect = document.createElement("select");
+  simpleFields(rule.object_type).forEach((field) => {
+    const option = document.createElement("option");
+    option.value = field.name;
+    option.textContent = `${field.name} · ${field.type}`;
+    ownerSelect.append(option);
+  });
+  ownerSelect.value = ownerField(rule) || ownerSelect.options[0]?.value || "";
+  ownerSelect.addEventListener("change", () => {
+    rule.read = `${ownerSelect.value} == $user.id`;
+    rule.write = rule.read;
+    renderRuleList();
+    markRulesChanged();
+  });
+  ownerLabel.append(ownerSelect);
+  const ownerNote = document.createElement("p");
+  ownerNote.textContent = "$user.id comes from the device JWT subject.";
+  owner.append(ownerLabel, ownerNote);
+
+  const queries = document.createElement("div");
+  queries.className = "rule-query-grid";
+  queries.append(queryEditor(rule, "read", "READ QUERY"), queryEditor(rule, "write", "WRITE QUERY"));
+  card.append(head, owner, queries);
+  return card;
+}
+
+function queryEditor(rule, property, labelText) {
+  const wrap = document.createElement("label");
+  wrap.className = "rule-query";
+  wrap.textContent = labelText;
+  const textarea = document.createElement("textarea");
+  textarea.spellcheck = false;
+  textarea.value = rule[property] || "FALSEPREDICATE";
+  textarea.addEventListener("input", () => {
+    rule[property] = textarea.value;
+    markRulesChanged();
+  });
+  const fields = document.createElement("div");
+  fields.className = "field-picks";
+  simpleFields(rule.object_type).forEach((field) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = field.name;
+    button.addEventListener("click", () => {
+      const start = textarea.selectionStart;
+      const separator = start > 0 && !/\s$/.test(textarea.value.slice(0, start)) ? " " : "";
+      textarea.setRangeText(separator + field.name, start, textarea.selectionEnd, "end");
+      textarea.dispatchEvent(new Event("input"));
+      textarea.focus();
+    });
+    fields.append(button);
+  });
+  const help = document.createElement("small");
+  help.textContent = "Barq predicate only. No sort, limit, distinct, vector order, or table traversal.";
+  wrap.append(textarea, fields, help);
+  return wrap;
+}
+
+function simpleFields(objectType) {
+  const object = state.ruleSchema?.objects?.find((item) => item.name === objectType);
+  return (object?.properties || []).filter((field) => !field.target || field.embedded);
+}
+
+function rulePreset(rule) {
+  if (rule.read === "FALSEPREDICATE" && rule.write === "FALSEPREDICATE") return "deny";
+  if (rule.read === "TRUEPREDICATE" && rule.write === "TRUEPREDICATE") return "public";
+  if (rule.read === rule.write && ownerField(rule)) return "owner";
+  return "custom";
+}
+
+function ownerField(rule) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*==\s*\$user\.id$/.exec(rule.read || "");
+  return match?.[1] || "";
+}
+
+function setRulePreset(index, preset) {
+  const rule = state.rules[index];
+  if (preset === "deny") rule.read = rule.write = "FALSEPREDICATE";
+  if (preset === "public") rule.read = rule.write = "TRUEPREDICATE";
+  if (preset === "owner") {
+    const fields = simpleFields(rule.object_type);
+    const preferred = fields.find((field) => field.name === "owner_id") || fields.find((field) => !field.primary_key) || fields[0];
+    rule.read = rule.write = preferred ? `${preferred.name} == $user.id` : "FALSEPREDICATE";
+  }
+  renderRuleList();
+  markRulesChanged();
+}
+
+function markRulesChanged() {
+  setRulePlan("Draft changed. Run plan before apply.");
+}
+
+function setRulePlan(message, good = null) {
+  const output = $("#rule-plan-result");
+  output.textContent = message;
+  output.classList.toggle("good", good === true);
+  output.classList.toggle("bad", good === false);
+}
+
+async function planRules() {
+  try {
+    const result = await api(`${ruleBasePath()}/sync-rules:plan`, {
+      method: "POST",
+      body: JSON.stringify({expected_revision: state.ruleRevision, rules: state.rules}),
+    });
+    const changes = result.changes?.join(" · ") || `revision ${result.target_revision} is valid`;
+    setRulePlan(changes, true);
+    toast("Rule plan passed");
+  } catch (error) {
+    setRulePlan(error.message, false);
+    toast(error.message, true);
+  }
+}
+
+async function applyRules() {
+  if (!confirm(`Apply revision ${state.ruleRevision + 1} now? Connected devices will be filtered without reconnecting.`)) return;
+  try {
+    await api(`${ruleBasePath()}/sync-rules`, {
+      method: "PUT",
+      body: JSON.stringify({expected_revision: state.ruleRevision, rules: state.rules}),
+    });
+    await loadRuleWorkspace();
+    toast("Sync rules are live");
+  } catch (error) {
+    setRulePlan(error.message, false);
+    toast(error.message, true);
+  }
+}
+
+async function testRules() {
+  const rawKey = $("#rule-test-key").value.trim();
+  if (!$("#rule-test-user").value.trim() || !$("#rule-test-object").value || !rawKey) {
+    toast("User, object, and primary key are required", true);
+    return;
+  }
+  let primaryKey = rawKey;
+  try { primaryKey = JSON.parse(rawKey); } catch { /* plain text key */ }
+  const output = $("#rule-test-result");
+  try {
+    const result = await api(`${ruleBasePath()}/sync-rules:test`, {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: $("#rule-test-user").value.trim(),
+        object_type: $("#rule-test-object").value,
+        primary_key: primaryKey,
+        rules: state.rules,
+      }),
+    });
+    output.textContent = result.found ? `READ ${result.can_read ? "ALLOW" : "DENY"} · WRITE ${result.can_write ? "ALLOW" : "DENY"}` : "OBJECT NOT FOUND";
+    output.classList.toggle("good", result.found && result.can_read && result.can_write);
+    output.classList.toggle("bad", !result.found || !result.can_read || !result.can_write);
+  } catch (error) {
+    output.textContent = error.message;
+    output.classList.remove("good");
+    output.classList.add("bad");
+  }
+}
+
+function renderRuleHistory() {
+  const list = $("#rule-history");
+  if (!state.ruleHistory.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No applied revisions yet. CLI fallback is revision 0.";
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...state.ruleHistory.map((revision) => {
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const body = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `REV ${revision.revision}${revision.revision === state.ruleRevision ? " · ACTIVE" : ""}`;
+    const meta = document.createElement("p");
+    const time = revision.created_at ? new Date(revision.created_at).toLocaleString() : "unknown time";
+    meta.textContent = `${revision.rules?.length || 0} rules · ${revision.source || "apply"} · ${time}`;
+    body.append(title, meta);
+    row.append(body);
+    if (revision.revision !== state.ruleRevision) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "RESTORE";
+      button.addEventListener("click", () => restoreRules(revision.revision));
+      row.append(button);
+    }
+    return row;
+  }));
+}
+
+async function restoreRules(revision) {
+  if (!confirm(`Restore revision ${revision} as new revision ${state.ruleRevision + 1}?`)) return;
+  try {
+    await api(`${ruleBasePath()}/sync-rules/revisions/${revision}:restore`, {
+      method: "POST",
+      body: JSON.stringify({expected_revision: state.ruleRevision}),
+    });
+    await loadRuleWorkspace();
+    toast(`Revision ${revision} restored`);
+  } catch (error) { toast(error.message, true); }
 }
 
 function renderTenants() {
@@ -524,6 +861,26 @@ $("#key-form").addEventListener("submit", async (event) => {
     toast("API key created");
   } catch (error) { toast(error.message, true); }
 });
+
+$("#load-rules").addEventListener("click", loadRuleWorkspace);
+$("#add-rule").addEventListener("click", () => {
+  const objectType = $("#rule-object-picker").value;
+  if (!objectType) {
+    toast("Select an object first", true);
+    return;
+  }
+  const fields = simpleFields(objectType);
+  const owner = fields.find((field) => field.name === "owner_id");
+  const predicate = owner ? `${owner.name} == $user.id` : "FALSEPREDICATE";
+  state.rules.push({object_type: objectType, read: predicate, write: predicate});
+  state.rules.sort((left, right) => left.object_type.localeCompare(right.object_type));
+  renderObjectPickers();
+  renderRuleList();
+  markRulesChanged();
+});
+$("#plan-rules").addEventListener("click", planRules);
+$("#apply-rules").addEventListener("click", applyRules);
+$("#test-rules").addEventListener("click", testRules);
 
 $("#search").addEventListener("input", renderHooks);
 $("#drawer-close").addEventListener("click", closeDrawer);

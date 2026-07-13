@@ -15,7 +15,7 @@ concurrency:
 
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
-  BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
+  BARQ_CORE_COMMIT: 9df437cbff1f352f90fe0cbee1612722a03830d0
   RESTIC_VERSION: 0.19.1
   COSIGN_VERSION: 3.1.1
 
@@ -172,11 +172,12 @@ jobs:
             --allow-unsigned-tokens \
             --host 0.0.0.0 \
             --port 9090 \
+            --enable-flx \
             --internal-api-secret ci-secret \
             --log-level error
           for _ in $(seq 1 30); do
             if curl -fsS -H "Authorization: Bearer ci-secret" \
-              http://127.0.0.1:19090/internal/v1/health; then
+              http://127.0.0.1:19090/internal/v1/health | grep -q 'flx_rules'; then
               exit 0
             fi
             sleep 1
@@ -187,6 +188,93 @@ jobs:
       - name: Stop Core image
         if: always()
         run: docker rm -f barq-core-ci >/dev/null 2>&1 || true
+
+  docker-e2e:
+    name: Docker FLX end-to-end
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BARQ_PROJECT: barq-flx-e2e
+      BARQ_DOMAIN: localhost
+      BARQ_CONTROL_IMAGE: barq-control-plane:ci-e2e
+      BARQ_CORE_IMAGE: barq-core:ci-e2e
+      BARQ_INTERNAL_SECRET: docker-internal-secret
+      BARQ_API_KEY: docker-admin
+      BARQ_TENANT: tenant-a
+      BARQ_DATABASE: main
+      BARQ_LOG_LEVEL: warn
+      BARQ_ALLOW_PRIVATE_WEBHOOKS: "false"
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v7
+        with:
+          path: server
+
+      - name: Check out barq-go
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: recursive
+
+      - name: Check out Core
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-core
+          ref: ${{ env.BARQ_CORE_COMMIT }}
+          path: core
+          submodules: recursive
+
+      - name: Build deployment images
+        run: |
+          docker build -f server/Dockerfile -t "$BARQ_CONTROL_IMAGE" .
+          docker build -f server/Dockerfile.core -t "$BARQ_CORE_IMAGE" core
+
+      - name: Create test JWT key
+        run: |
+          mkdir -p server/deploy/secrets
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/barq-jwt-private.pem
+          openssl pkey -in /tmp/barq-jwt-private.pem -pubout -out server/deploy/secrets/jwt-public.pem
+
+      - name: Start generated deployment
+        run: docker compose -f server/deploy/compose.yaml up -d --wait core control
+
+      - name: Apply schema and live rule
+        run: |
+          docker compose -f server/deploy/compose.yaml exec -T core \
+            curl -fsS \
+              -H "Authorization: Bearer $BARQ_INTERNAL_SECRET" \
+              -H 'Content-Type: application/json' \
+              --data '{"request_id":"docker-schema","scope":{"tenant":"tenant-a","database":"main"},"version":1,"manifest":{"objects":[{"name":"Order","primary_key":{"name":"id","type":"string"},"properties":[{"name":"id","type":"string"},{"name":"owner_id","type":"string"}]}]}}' \
+              http://127.0.0.1:9090/internal/v1/schema/apply
+          docker compose -f server/deploy/compose.yaml exec -T control \
+            curl -fsS -X PUT \
+              -H "Authorization: Bearer $BARQ_API_KEY" \
+              -H 'Idempotency-Key: docker-e2e-rule' \
+              -H 'Content-Type: application/json' \
+              --data '{"expected_revision":0,"rules":[{"object_type":"Order","read":"owner_id == $user.id","write":"owner_id == $user.id"}]}' \
+              http://127.0.0.1:8080/v1/tenants/tenant-a/databases/main/sync-rules \
+            | grep -q '"revision":1'
+
+      - name: Restart and verify rule history
+        run: |
+          docker compose -f server/deploy/compose.yaml stop control
+          docker compose -f server/deploy/compose.yaml restart core
+          docker compose -f server/deploy/compose.yaml up -d --wait core control
+          docker compose -f server/deploy/compose.yaml exec -T control \
+            curl -fsS \
+              -H "Authorization: Bearer $BARQ_API_KEY" \
+              http://127.0.0.1:8080/v1/tenants/tenant-a/databases/main/sync-rules/revisions \
+            | grep -q '"request_id":"docker-e2e-rule"'
+
+      - name: Show deployment logs
+        if: failure()
+        run: docker compose -f server/deploy/compose.yaml logs --no-color
+
+      - name: Stop generated deployment
+        if: always()
+        run: docker compose -f server/deploy/compose.yaml down --volumes
 
   encrypted-backup:
     name: Encrypted S3 backup and restore

@@ -72,7 +72,7 @@ func TestInitCreatesPrivateRunnableBundle(t *testing.T) {
 	}
 	compose := readTestFile(t, filepath.Join(dir, "compose.yaml"))
 	if !strings.Contains(compose, "internal: true") || !strings.Contains(compose, "barq-data:/var/lib/barq") ||
-		!strings.Contains(compose, "caddy:2.10.2-alpine@sha256:") {
+		!strings.Contains(compose, "caddy:2.10.2-alpine@sha256:") || !strings.Contains(compose, "--enable-flx") {
 		t.Fatal("compose bundle is missing private networking or shared storage")
 	}
 

@@ -13,6 +13,7 @@ import (
 	"github.com/barqdb/barq-server/internal/auth"
 	"github.com/barqdb/barq-server/internal/control"
 	"github.com/barqdb/barq-server/internal/dataplane"
+	"github.com/barqdb/barq-server/internal/syncrules"
 	"github.com/barqdb/barq-server/internal/transforms"
 	"github.com/barqdb/barq-server/internal/webhooks"
 )
@@ -23,6 +24,86 @@ func TestDataAPITenantAuthBeforeDataPlane(t *testing.T) {
 	if forbidden.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-tenant request was not forbidden before reaching the data plane: %d", forbidden.StatusCode)
 	}
+}
+
+func TestSyncRuleAPIRequiresAdminAndKeepsRevisionHistory(t *testing.T) {
+	var current dataplane.FLXRuleSet
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/schema/read":
+			_ = json.NewEncoder(w).Encode(dataplane.Schema{Version: 1, Objects: []dataplane.SchemaObject{{Name: "Order"}}})
+		case "/internal/v1/flx/rules/read":
+			_ = json.NewEncoder(w).Encode(current)
+		case "/internal/v1/flx/rules/plan", "/internal/v1/flx/rules/apply":
+			var input dataplane.FLXRulesChangeRequest
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			candidate := dataplane.FLXRuleSet{Revision: current.Revision + 1, Hash: "hash-one", Source: "database", Rules: input.Rules}
+			if r.URL.Path == "/internal/v1/flx/rules/apply" {
+				current = candidate
+			}
+			_ = json.NewEncoder(w).Encode(dataplane.FLXRulesResult{FLXRuleSet: candidate, CurrentRevision: input.ExpectedRevision, TargetRevision: candidate.Revision, Applied: r.URL.Path == "/internal/v1/flx/rules/apply"})
+		case "/internal/v1/flx/rules/test":
+			_ = json.NewEncoder(w).Encode(dataplane.FLXRulesTestResult{ObjectType: "Order", Found: true, Configured: true, CanRead: true, CanWrite: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(core.Close)
+	data, err := dataplane.NewHTTPDataPlane(core.URL, "", core.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := control.OpenBarqStore(t.TempDir() + "/control.barq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	keys := auth.NewManager(store)
+	if err := keys.Bootstrap(t.Context(), auth.BootstrapOptions{APIKeys: "sync-key:a:main:sync:admin,read-key:a:main:read"}); err != nil {
+		t.Fatal(err)
+	}
+	hooks := webhooks.NewService(store, transforms.NewQuickJS(), true)
+	server := httptest.NewServer(api.New(data, hooks, keys, syncrules.New(data, store)).Handler())
+	t.Cleanup(server.Close)
+	base := server.URL + "/v1/tenants/a/databases/main"
+
+	forbidden := request(t, server.Client(), http.MethodGet, base+"/sync-rules", "read-key", nil, nil)
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("read key status = %d", forbidden.StatusCode)
+	}
+	_ = forbidden.Body.Close()
+	schema := request(t, server.Client(), http.MethodGet, base+"/schema", "sync-key", nil, nil)
+	if schema.StatusCode != http.StatusOK {
+		t.Fatalf("schema status = %d: %s", schema.StatusCode, readBody(schema))
+	}
+	_ = schema.Body.Close()
+	rules := []map[string]any{{"object_type": "Order", "read": "owner_id == $user.id", "write": "owner_id == $user.id"}}
+	planned := request(t, server.Client(), http.MethodPost, base+"/sync-rules:plan", "sync-key", map[string]any{"expected_revision": 0, "rules": rules}, nil)
+	if planned.StatusCode != http.StatusOK {
+		t.Fatalf("plan status = %d: %s", planned.StatusCode, readBody(planned))
+	}
+	_ = planned.Body.Close()
+	applied := request(t, server.Client(), http.MethodPut, base+"/sync-rules", "sync-key", map[string]any{"expected_revision": 0, "rules": rules}, map[string]string{"Idempotency-Key": "first-rules"})
+	if applied.StatusCode != http.StatusOK || applied.Header.Get("X-Barq-Rule-Revision") != "1" {
+		t.Fatalf("apply status = %d: %s", applied.StatusCode, readBody(applied))
+	}
+	_ = applied.Body.Close()
+	history := request(t, server.Client(), http.MethodGet, base+"/sync-rules/revisions", "sync-key", nil, nil)
+	body := readBody(history)
+	if history.StatusCode != http.StatusOK || !strings.Contains(body, `"revision":1`) || !strings.Contains(body, `"request_id":"first-rules"`) {
+		t.Fatalf("history status = %d: %s", history.StatusCode, body)
+	}
+	tested := request(t, server.Client(), http.MethodPost, base+"/sync-rules:test", "sync-key", map[string]any{"user_id": "user-1", "object_type": "Order", "primary_key": "order-1", "rules": rules}, nil)
+	if tested.StatusCode != http.StatusOK || !strings.Contains(readBody(tested), `"can_read":true`) {
+		t.Fatalf("test status = %d", tested.StatusCode)
+	}
+	restored := request(t, server.Client(), http.MethodPost, base+"/sync-rules/revisions/1:restore", "sync-key", map[string]any{"expected_revision": 1}, map[string]string{"Idempotency-Key": "restore-one"})
+	if restored.StatusCode != http.StatusOK || restored.Header.Get("X-Barq-Rule-Revision") != "2" {
+		t.Fatalf("restore status = %d: %s", restored.StatusCode, readBody(restored))
+	}
+	_ = restored.Body.Close()
 }
 
 func TestWebhookRegistrationAPI(t *testing.T) {
@@ -194,7 +275,7 @@ func testServer(t *testing.T) *httptest.Server {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(api.New(data, hooks, keys).Handler())
+	server := httptest.NewServer(api.New(data, hooks, keys, syncrules.New(data, store)).Handler())
 	t.Cleanup(server.Close)
 	return server
 }

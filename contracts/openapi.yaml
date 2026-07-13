@@ -78,11 +78,79 @@ paths:
       responses:
         "200": {$ref: "#/components/responses/JSON"}
         default: {$ref: "#/components/responses/Error"}
+  /internal/v1/schema/read:
+    post:
+      summary: Read the active database schema
+      operationId: readSchema
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ScopedRequest"}
+      responses:
+        "200":
+          description: Active schema used to build sync rules.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Schema"}
+        default: {$ref: "#/components/responses/Error"}
   /internal/v1/schema/apply:
     post:
       summary: Apply a schema change
       operationId: applySchema
       requestBody: {$ref: "#/components/requestBodies/JSONRequest"}
+      responses:
+        "200": {$ref: "#/components/responses/JSON"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/flx/rules/read:
+    post:
+      summary: Read the active FLX rule revision
+      operationId: readFLXRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ScopedRequest"}
+      responses:
+        "200":
+          description: Active immutable rule set.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/FLXRuleSet"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/flx/rules/plan:
+    post:
+      summary: Validate and plan an FLX rule revision
+      operationId: planFLXRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRulesChangeRequest"}
+      responses:
+        "200": {$ref: "#/components/responses/JSON"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/flx/rules/apply:
+    post:
+      summary: Persist and activate an FLX rule revision
+      operationId: applyFLXRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRulesChangeRequest"}
+      responses:
+        "200": {$ref: "#/components/responses/JSON"}
+        default: {$ref: "#/components/responses/Error"}
+  /internal/v1/flx/rules/test:
+    post:
+      summary: Test active or candidate FLX rules against one stored object
+      operationId: testFLXRules
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/FLXRulesTestRequest"}
       responses:
         "200": {$ref: "#/components/responses/JSON"}
         default: {$ref: "#/components/responses/Error"}
@@ -147,6 +215,77 @@ components:
       properties:
         tenant: {type: string, minLength: 1}
         database: {type: string, minLength: 1}
+    ScopedRequest:
+      type: object
+      additionalProperties: false
+      required: [scope]
+      properties:
+        request_id: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+    SchemaProperty:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name: {type: string}
+        type: {type: string}
+        nullable: {type: boolean}
+        primary_key: {type: boolean}
+        collection: {type: string}
+        target: {type: string}
+        embedded: {type: boolean}
+    SchemaObject:
+      type: object
+      additionalProperties: false
+      required: [name, properties]
+      properties:
+        name: {type: string}
+        properties: {type: array, items: {$ref: "#/components/schemas/SchemaProperty"}}
+    Schema:
+      type: object
+      additionalProperties: false
+      required: [version, objects]
+      properties:
+        version: {type: integer, minimum: 0}
+        objects: {type: array, items: {$ref: "#/components/schemas/SchemaObject"}}
+    FLXRule:
+      type: object
+      additionalProperties: false
+      required: [object_type, read, write]
+      properties:
+        object_type: {type: string, minLength: 1}
+        read: {type: string}
+        write: {type: string}
+    FLXRuleSet:
+      type: object
+      additionalProperties: false
+      required: [revision, hash, rules]
+      properties:
+        revision: {type: integer, minimum: 0}
+        hash: {type: string}
+        source: {type: string}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}
+    FLXRulesChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, expected_revision, target_revision, rules]
+      properties:
+        request_id: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        expected_revision: {type: integer, minimum: 0}
+        target_revision: {type: integer, minimum: 1}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}
+    FLXRulesTestRequest:
+      type: object
+      additionalProperties: false
+      required: [scope, user_id, object_type, primary_key]
+      properties:
+        request_id: {type: string}
+        scope: {$ref: "#/components/schemas/Scope"}
+        user_id: {type: string}
+        object_type: {type: string}
+        primary_key: {}
+        rules: {type: array, items: {$ref: "#/components/schemas/FLXRule"}}
     Object:
       type: object
       additionalProperties: false
