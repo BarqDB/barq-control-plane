@@ -7,5 +7,5 @@
 **/*.barq
 **/*.barq.*
 **/*.test
-**/barq-server
+server/barq-server
 **/coverage.out
