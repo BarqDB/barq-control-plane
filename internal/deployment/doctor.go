@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -99,6 +100,10 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	now := time.Now
+	if options.Now != nil {
+		now = options.Now
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, manifest.URL+"/health/ready", nil)
 	if err == nil {
 		response, requestErr := client.Do(request)
@@ -113,11 +118,8 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 			}
 		}
 	}
+	checks = append(checks, webhookHealthCheck(ctx, client, dir, manifest.URL, now)...)
 
-	now := time.Now
-	if options.Now != nil {
-		now = options.Now
-	}
 	backupTime, backupPath := newestBackup(filepath.Join(dir, "backups"))
 	if backupTime.IsZero() {
 		checks = append(checks, Check{Name: "backups", Status: CheckWarn, Detail: "no verified local backup found"})
@@ -136,6 +138,66 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 		}
 	}
 	return checks, nil
+}
+
+type webhookHealth struct {
+	Pending         int        `json:"pending"`
+	Retrying        int        `json:"retrying"`
+	DeadTransform   int        `json:"dead_transform"`
+	DeadDelivery    int        `json:"dead_delivery"`
+	OldestPendingAt *time.Time `json:"oldest_pending_at"`
+}
+
+func webhookHealthCheck(ctx context.Context, client *http.Client, dir, baseURL string, now func() time.Time) []Check {
+	apiKey, err := environmentValue(filepath.Join(dir, ".env"), "BARQ_API_KEY")
+	if err != nil {
+		return []Check{{Name: "webhook queues", Status: CheckWarn, Detail: err.Error()}}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/operations/health", nil)
+	if err != nil {
+		return []Check{{Name: "webhook queues", Status: CheckWarn, Detail: err.Error()}}
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	response, err := client.Do(request)
+	if err != nil {
+		return []Check{{Name: "webhook queues", Status: CheckWarn, Detail: err.Error()}}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return []Check{{Name: "webhook queues", Status: CheckWarn, Detail: response.Status}}
+	}
+	var health webhookHealth
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&health); err != nil {
+		return []Check{{Name: "webhook queues", Status: CheckWarn, Detail: "invalid server response: " + err.Error()}}
+	}
+	checks := make([]Check, 0, 2)
+	queueStatus := CheckPass
+	queueDetail := fmt.Sprintf("%d pending, %d retrying", health.Pending, health.Retrying)
+	if health.OldestPendingAt != nil && now().Sub(*health.OldestPendingAt) > 5*time.Minute {
+		queueStatus = CheckWarn
+		queueDetail += fmt.Sprintf("; oldest is %s old", now().Sub(*health.OldestPendingAt).Round(time.Minute))
+	}
+	checks = append(checks, Check{Name: "webhook queues", Status: queueStatus, Detail: queueDetail})
+	deadStatus := CheckPass
+	if health.DeadTransform+health.DeadDelivery > 0 {
+		deadStatus = CheckWarn
+	}
+	checks = append(checks, Check{Name: "dead letters", Status: deadStatus, Detail: fmt.Sprintf("%d transform, %d delivery", health.DeadTransform, health.DeadDelivery)})
+	return checks
+}
+
+func environmentValue(path, wanted string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
+		if found && key == wanted && value != "" {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("%s is missing", wanted)
 }
 
 func healthyServices(data []byte) (string, error) {

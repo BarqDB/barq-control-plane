@@ -94,3 +94,12 @@ type Cursor struct {
 	Scope  dataplane.Scope `json:"scope"`
 	Cursor uint64          `json:"cursor"`
 }
+
+type OperationalHealth struct {
+	Status          string     `json:"status"`
+	Pending         int        `json:"pending"`
+	Retrying        int        `json:"retrying"`
+	DeadTransform   int        `json:"dead_transform"`
+	DeadDelivery    int        `json:"dead_delivery"`
+	OldestPendingAt *time.Time `json:"oldest_pending_at,omitempty"`
+}

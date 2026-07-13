@@ -62,6 +62,35 @@ func TestEmbeddedControlAndSwagger(t *testing.T) {
 	}
 }
 
+func TestOperationalHealthRequiresKeyAndReturnsScopedCounts(t *testing.T) {
+	server := testServer(t)
+	unauthorized, err := server.Client().Get(server.URL + "/v1/operations/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.StatusCode)
+	}
+	_ = unauthorized.Body.Close()
+	forbidden := request(t, server.Client(), http.MethodGet, server.URL+"/v1/operations/health", "key-read", nil, nil)
+	if forbidden.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing operations permission status = %d", forbidden.StatusCode)
+	}
+	_ = forbidden.Body.Close()
+	response := request(t, server.Client(), http.MethodGet, server.URL+"/v1/operations/health", "key-a", nil, nil)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("operations health status = %d: %s", response.StatusCode, readBody(response))
+	}
+	var health webhooks.OperationalHealth
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if health.Status != "ok" || health.Pending != 0 || health.DeadDelivery != 0 {
+		t.Fatalf("unexpected health: %+v", health)
+	}
+}
+
 func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	data, err := dataplane.NewHTTPDataPlane("http://127.0.0.1:1", "test-secret", nil)
@@ -77,6 +106,7 @@ func testServer(t *testing.T) *httptest.Server {
 	hooks := webhooks.NewService(store, runtime, true)
 	keys := auth.NewMemoryKeyStore()
 	keys.Add("key-a", auth.ServiceKey{Tenant: "a", Database: "main", Actions: []string{"*"}})
+	keys.Add("key-read", auth.ServiceKey{Tenant: "a", Database: "main", Actions: []string{"read"}})
 	server := httptest.NewServer(api.New(data, hooks, keys).Handler())
 	t.Cleanup(server.Close)
 	return server

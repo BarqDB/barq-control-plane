@@ -144,14 +144,21 @@ func TestVerifyBackupRejectsArchiveTraversal(t *testing.T) {
 func TestDoctorReportsDeploymentHealth(t *testing.T) {
 	dir := initTestDeployment(t)
 	runner := &recordingRunner{}
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"status":"ok"}`))}, nil
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"status":"ok"}`
+		if request.URL.Path == "/v1/operations/health" {
+			if request.Header.Get("Authorization") == "" {
+				t.Fatal("operations health did not use the deployment API key")
+			}
+			body = `{"status":"ok","pending":0,"retrying":0,"dead_transform":0,"dead_delivery":0}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	checks, err := Doctor(context.Background(), DoctorOptions{Dir: dir, Runner: runner, HTTPClient: client, MinimumBytes: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasCheck(checks, "disk space", CheckPass) || !hasCheck(checks, "public health", CheckPass) || !hasCheck(checks, "backups", CheckWarn) {
+	if !hasCheck(checks, "disk space", CheckPass) || !hasCheck(checks, "public health", CheckPass) || !hasCheck(checks, "webhook queues", CheckPass) || !hasCheck(checks, "dead letters", CheckPass) || !hasCheck(checks, "backups", CheckWarn) {
 		t.Fatalf("unexpected checks: %+v", checks)
 	}
 }

@@ -49,8 +49,24 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/v1/tenants/", s.dataRoutes)
 	protected.HandleFunc("/v1/webhooks", s.webhookCollection)
 	protected.HandleFunc("/v1/webhooks/", s.webhookMember)
+	protected.HandleFunc("GET /v1/operations/health", s.operationsHealth)
 	mux.Handle("/v1/", auth.Middleware(s.keys, protected))
 	return requestIDMiddleware(mux)
+}
+
+func (s *Server) operationsHealth(w http.ResponseWriter, r *http.Request) {
+	if err := auth.AuthorizeAction(r.Context(), "operations:read"); err != nil {
+		writeError(w, err)
+		return
+	}
+	health, err := s.hooks.OperationalHealth(r.Context(), func(scope dataplane.Scope) bool {
+		return auth.CanAccessScope(r.Context(), scope)
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, health)
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {

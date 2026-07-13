@@ -49,7 +49,7 @@ barqctl open
 Day-to-day maintenance also stays behind `barqctl`:
 
 ```sh
-barqctl doctor
+barqctl doctor                 # containers, disk, backups, queues, dead letters
 barqctl logs --tail 200
 barqctl backup
 barqctl upgrade --release v1.2.0

@@ -228,6 +228,52 @@ func (s *Service) Replay(ctx context.Context, id string) (int, error) {
 	return count, nil
 }
 
+func (s *Service) OperationalHealth(ctx context.Context, visible func(dataplane.Scope) bool) (OperationalHealth, error) {
+	health := OperationalHealth{Status: "ok"}
+	hooks, err := s.List(ctx, nil)
+	if err != nil {
+		return health, err
+	}
+	for _, hook := range hooks {
+		if visible != nil && !visible(hook.Scope) {
+			continue
+		}
+		records, err := s.store.List(ctx, CollectionDeliveries, hook.ID+"/")
+		if err != nil {
+			return health, err
+		}
+		for _, record := range records {
+			delivery, err := control.Decode[Delivery](record)
+			if err != nil {
+				return health, err
+			}
+			switch delivery.Status {
+			case "pending":
+				health.Pending++
+				health.OldestPendingAt = earlierTime(health.OldestPendingAt, delivery.CreatedAt)
+			case "retry":
+				health.Retrying++
+				health.OldestPendingAt = earlierTime(health.OldestPendingAt, delivery.CreatedAt)
+			case "dead":
+				if delivery.Stage == "transform" {
+					health.DeadTransform++
+				} else {
+					health.DeadDelivery++
+				}
+			}
+		}
+	}
+	return health, nil
+}
+
+func earlierTime(current *time.Time, candidate time.Time) *time.Time {
+	if candidate.IsZero() || (current != nil && !candidate.Before(*current)) {
+		return current
+	}
+	value := candidate
+	return &value
+}
+
 func (s *Service) revision(ctx context.Context, id string, number uint64) (Revision, error) {
 	record, err := s.store.Get(ctx, CollectionRevisions, revisionKey(id, number))
 	if err != nil {

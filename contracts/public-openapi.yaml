@@ -20,6 +20,16 @@ paths:
       operationId: checkReadiness
       security: []
       responses: {"200": {description: Data plane is ready.}, "503": {description: Data plane is unavailable.}}
+  /v1/operations/health:
+    get:
+      summary: Check webhook queues and dead letters
+      operationId: checkOperationsHealth
+      responses:
+        "200":
+          description: Operational health visible to the API key scope.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OperationalHealth"}
   /v1/tenants/{tenant}/databases/{database}/objects/{type}:
     post:
       summary: Create an object
@@ -171,6 +181,17 @@ components:
     primaryKey: {name: primaryKey, in: path, required: true, schema: {type: string}}
     id: {name: id, in: path, required: true, schema: {type: string}}
   schemas:
+    OperationalHealth:
+      type: object
+      additionalProperties: false
+      required: [status, pending, retrying, dead_transform, dead_delivery]
+      properties:
+        status: {type: string, const: ok}
+        pending: {type: integer, minimum: 0}
+        retrying: {type: integer, minimum: 0}
+        dead_transform: {type: integer, minimum: 0}
+        dead_delivery: {type: integer, minimum: 0}
+        oldest_pending_at: {type: string, format: date-time}
     Scope:
       type: object
       additionalProperties: false

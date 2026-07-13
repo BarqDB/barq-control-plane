@@ -100,11 +100,28 @@ func Authorize(ctx context.Context, scope dataplane.Scope, action string) error 
 	if !ok {
 		return &dataplane.Error{Code: dataplane.CodeUnauthorized, Message: "authentication required"}
 	}
-	if key.Tenant != "*" && key.Tenant != scope.Tenant {
-		return &dataplane.Error{Code: dataplane.CodeForbidden, Message: "API key cannot access this tenant"}
-	}
-	if key.Database != "*" && key.Database != scope.Database {
+	if !CanAccessScope(ctx, scope) {
+		if key.Tenant != "*" && key.Tenant != scope.Tenant {
+			return &dataplane.Error{Code: dataplane.CodeForbidden, Message: "API key cannot access this tenant"}
+		}
 		return &dataplane.Error{Code: dataplane.CodeForbidden, Message: "API key cannot access this database"}
+	}
+	return AuthorizeAction(ctx, action)
+}
+
+func CanAccessScope(ctx context.Context, scope dataplane.Scope) bool {
+	key, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return false
+	}
+	return (key.Tenant == "*" || key.Tenant == scope.Tenant) &&
+		(key.Database == "*" || key.Database == scope.Database)
+}
+
+func AuthorizeAction(ctx context.Context, action string) error {
+	key, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return &dataplane.Error{Code: dataplane.CodeUnauthorized, Message: "authentication required"}
 	}
 	for _, allowed := range key.Actions {
 		if allowed == "*" || allowed == action {

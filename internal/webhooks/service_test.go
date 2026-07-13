@@ -97,6 +97,43 @@ func TestDeliveryRetriesBecomeDeadLetter(t *testing.T) {
 	}
 }
 
+func TestOperationalHealthFiltersTenantAndCountsQueues(t *testing.T) {
+	ctx := context.Background()
+	store := openServiceStore(t)
+	service := NewService(store, transforms.NewQuickJS(), true)
+	now := time.Date(2026, 7, 13, 1, 0, 0, 0, time.UTC)
+	var hookIDs []string
+	for _, tenant := range []string{"a", "b"} {
+		registered, err := service.Register(ctx, Registration{
+			Name: tenant, Scope: dataplane.Scope{Tenant: tenant, Database: "main"}, URL: "http://127.0.0.1/hook",
+			Events: []string{"Task.created"}, Transform: TransformConfig{Language: "javascript", Source: `function transform(ctx) { return ctx.after; }`},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hookIDs = append(hookIDs, registered.Webhook.ID)
+	}
+	deliveries := []Delivery{
+		{ID: hookIDs[0] + "/pending", WebhookID: hookIDs[0], Status: "pending", Stage: "delivery", CreatedAt: now},
+		{ID: hookIDs[0] + "/dead", WebhookID: hookIDs[0], Status: "dead", Stage: "transform", CreatedAt: now},
+		{ID: hookIDs[1] + "/other", WebhookID: hookIDs[1], Status: "dead", Stage: "delivery", CreatedAt: now},
+	}
+	zero := uint64(0)
+	for _, delivery := range deliveries {
+		encoded, _ := control.Encode(delivery)
+		if _, err := store.Put(ctx, CollectionDeliveries, delivery.ID, encoded, &zero); err != nil {
+			t.Fatal(err)
+		}
+	}
+	health, err := service.OperationalHealth(ctx, func(scope dataplane.Scope) bool { return scope.Tenant == "a" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Pending != 1 || health.DeadTransform != 1 || health.DeadDelivery != 0 || health.OldestPendingAt == nil || !health.OldestPendingAt.Equal(now) {
+		t.Fatalf("unexpected health: %+v", health)
+	}
+}
+
 func openServiceStore(t *testing.T) *control.BarqStore {
 	t.Helper()
 	store, err := control.OpenBarqStore(t.TempDir() + "/control.barq")
