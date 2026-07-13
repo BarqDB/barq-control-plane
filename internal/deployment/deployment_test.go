@@ -66,11 +66,13 @@ func TestInitCreatesPrivateRunnableBundle(t *testing.T) {
 	if err := json.Unmarshal([]byte(manifestData), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Domain != "db.example.com" || manifest.Project == "" || manifest.Release.Version != "v1.2.3" || !manifest.CreatedAt.Equal(now) {
+	if manifest.Domain != "db.example.com" || manifest.Project == "" || manifest.Release.Version != "v1.2.3" ||
+		manifest.Release.BundleVersion != CurrentBundleVersion || !manifest.CreatedAt.Equal(now) {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 	compose := readTestFile(t, filepath.Join(dir, "compose.yaml"))
-	if !strings.Contains(compose, "internal: true") || !strings.Contains(compose, "barq-data:/var/lib/barq") {
+	if !strings.Contains(compose, "internal: true") || !strings.Contains(compose, "barq-data:/var/lib/barq") ||
+		!strings.Contains(compose, "caddy:2.10.2-alpine@sha256:") {
 		t.Fatal("compose bundle is missing private networking or shared storage")
 	}
 

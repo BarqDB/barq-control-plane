@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	deployfiles "github.com/barqdb/barq-server/deploy"
 )
 
 type UpgradeOptions struct {
@@ -131,6 +133,20 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 	if err != nil {
 		return UpgradeResult{}, err
 	}
+	oldCompose, err := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	oldCaddyfile, err := os.ReadFile(filepath.Join(dir, "Caddyfile"))
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	restoreOldFiles := func() {
+		_ = writeFile(dir, ".env", oldEnvironment, 0o600)
+		_ = writeFile(dir, manifestName, oldManifest, 0o644)
+		_ = writeFile(dir, "compose.yaml", oldCompose, 0o644)
+		_ = writeFile(dir, "Caddyfile", oldCaddyfile, 0o644)
+	}
 	if target != current {
 		manifest.Previous = append(manifest.Previous, current)
 		if len(manifest.Previous) > 10 {
@@ -150,7 +166,15 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 		return UpgradeResult{}, err
 	}
 	if err := writeManifest(dir, manifest); err != nil {
-		_ = writeFile(dir, ".env", oldEnvironment, 0o600)
+		restoreOldFiles()
+		return UpgradeResult{}, err
+	}
+	if err := writeFile(dir, "compose.yaml", deployfiles.Compose, 0o644); err != nil {
+		restoreOldFiles()
+		return UpgradeResult{}, err
+	}
+	if err := writeFile(dir, "Caddyfile", deployfiles.Caddyfile, 0o644); err != nil {
+		restoreOldFiles()
 		return UpgradeResult{}, err
 	}
 	applyErr := runCompose(ctx, runner, dir, nil, stdout, stderr, "stop", "edge", "control")
@@ -163,7 +187,7 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 		applyErr = runCompose(ctx, runner, dir, nil, stdout, stderr, "up", "-d", "--wait")
 	}
 	if applyErr != nil {
-		rollbackErr := restoreFailedRelease(runner, dir, stdout, stderr, oldEnvironment, oldManifest, backup.Path)
+		rollbackErr := restoreFailedRelease(runner, dir, stdout, stderr, oldEnvironment, oldManifest, oldCompose, oldCaddyfile, backup.Path)
 		if rollbackErr != nil {
 			return UpgradeResult{}, fmt.Errorf("release failed: %v; automatic rollback also failed: %v; safety backup: %s", applyErr, rollbackErr, backup.Path)
 		}
@@ -190,11 +214,17 @@ func checkReleaseMigration(ctx context.Context, runner Runner, dir string, stdou
 		"migrate", "--check", "--from", fmt.Sprint(current.ControlSchema), "--to", fmt.Sprint(target.ControlSchema))
 }
 
-func restoreFailedRelease(runner Runner, dir string, stdout, stderr io.Writer, oldEnvironment, oldManifest []byte, backupPath string) error {
+func restoreFailedRelease(runner Runner, dir string, stdout, stderr io.Writer, oldEnvironment, oldManifest, oldCompose, oldCaddyfile []byte, backupPath string) error {
 	if err := writeFile(dir, ".env", oldEnvironment, 0o600); err != nil {
 		return err
 	}
 	if err := writeFile(dir, manifestName, oldManifest, 0o644); err != nil {
+		return err
+	}
+	if err := writeFile(dir, "compose.yaml", oldCompose, 0o644); err != nil {
+		return err
+	}
+	if err := writeFile(dir, "Caddyfile", oldCaddyfile, 0o644); err != nil {
 		return err
 	}
 	_, err := Restore(context.Background(), RestoreOptions{

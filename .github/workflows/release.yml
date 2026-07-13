@@ -260,6 +260,7 @@ jobs:
               "internal_protocol": 1,
               "core_data_format": 1,
               "control_schema": 1,
+              "bundle_version": 1,
               "core_commit": os.environ["BARQ_CORE_COMMIT"],
               "barq_go_commit": os.environ["BARQ_GO_COMMIT"],
           }

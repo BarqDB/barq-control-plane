@@ -30,6 +30,7 @@ const (
 	CurrentInternalProtocol = 1
 	CurrentCoreDataFormat   = 1
 	CurrentControlSchema    = 1
+	CurrentBundleVersion    = 1
 )
 
 type Manifest struct {
@@ -67,6 +68,9 @@ type Release struct {
 	InternalProtocol int    `json:"internal_protocol"`
 	CoreDataFormat   int    `json:"core_data_format"`
 	ControlSchema    int    `json:"control_schema"`
+	BundleVersion    int    `json:"bundle_version"`
+	CoreCommit       string `json:"core_commit,omitempty"`
+	BarqGoCommit     string `json:"barq_go_commit,omitempty"`
 }
 
 func DefaultDir() (string, error) {
@@ -188,8 +192,13 @@ func ResolveRelease(version string) (Release, error) {
 		return Release{}, fmt.Errorf("download release manifest: %s", response.Status)
 	}
 	var release Release
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&release); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&release); err != nil {
 		return Release{}, fmt.Errorf("decode release manifest: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Release{}, errors.New("decode release manifest: expected one JSON value")
 	}
 	return normalizeRelease(release), nil
 }
@@ -349,6 +358,9 @@ func normalizeRelease(release Release) Release {
 	if release.ControlSchema == 0 {
 		release.ControlSchema = CurrentControlSchema
 	}
+	if release.BundleVersion == 0 {
+		release.BundleVersion = CurrentBundleVersion
+	}
 	return release
 }
 
@@ -364,6 +376,9 @@ func validateReleaseCompatibility(release Release) error {
 	}
 	if release.ControlSchema <= 0 {
 		return errors.New("release control schema must be positive")
+	}
+	if release.BundleVersion != CurrentBundleVersion {
+		return fmt.Errorf("release needs deployment bundle %d; barqctl supports %d", release.BundleVersion, CurrentBundleVersion)
 	}
 	return nil
 }

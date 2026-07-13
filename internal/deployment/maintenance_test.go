@@ -119,6 +119,9 @@ func TestMaintenanceLockRejectsOverlappingWork(t *testing.T) {
 
 func TestUpgradePinsReleaseAndKeepsRollbackState(t *testing.T) {
 	dir := initTestDeployment(t)
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), append([]byte(readTestFile(t, filepath.Join(dir, "compose.yaml"))), []byte("\n# stale bundle\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	runner := &recordingRunner{}
 	digestA := strings.Repeat("a", 64)
 	digestB := strings.Repeat("b", 64)
@@ -145,6 +148,10 @@ func TestUpgradePinsReleaseAndKeepsRollbackState(t *testing.T) {
 	environment := readTestFile(t, filepath.Join(dir, ".env"))
 	if !strings.Contains(environment, "BARQ_CORE_IMAGE=core@sha256:"+digestB) {
 		t.Fatal("environment did not move to fixed Core digest")
+	}
+	compose := readTestFile(t, filepath.Join(dir, "compose.yaml"))
+	if strings.Contains(compose, "stale bundle") || !strings.Contains(compose, "caddy:2.10.2-alpine@sha256:") {
+		t.Fatal("upgrade did not replace the managed deployment bundle")
 	}
 	commands := strings.Join(runner.commands, "\n")
 	if !strings.Contains(commands, "docker pull core@sha256:") || !strings.Contains(commands, "docker pull control@sha256:") ||
