@@ -215,10 +215,10 @@ jobs:
           archive="barq-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
           if [ "$GOOS" = windows ]; then
             (cd dist/package && zip -9 "../${archive}.zip" barqctl.exe restic.exe cosign.exe)
-            sha256sum "dist/${archive}.zip" > "dist/${archive}.zip.sha256"
+            (cd dist && sha256sum "${archive}.zip" > "${archive}.zip.sha256")
           else
             tar -C dist/package -czf "dist/${archive}.tar.gz" barqctl restic cosign
-            sha256sum "dist/${archive}.tar.gz" > "dist/${archive}.tar.gz.sha256"
+            (cd dist && sha256sum "${archive}.tar.gz" > "${archive}.tar.gz.sha256")
           fi
           rm -rf dist/package
 
@@ -234,6 +234,11 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [control-image, core-image, barqctl]
     steps:
+      - name: Check out installers
+        uses: actions/checkout@v7
+        with:
+          path: server
+
       - name: Download barqctl builds
         uses: actions/download-artifact@v8
         with:
@@ -263,11 +268,17 @@ jobs:
               output.write("\n")
           PY
 
+      - name: Add installers
+        run: |
+          cp server/deploy/install.sh dist/install.sh
+          cp server/deploy/install.ps1 dist/install.ps1
+
       - name: Attest release files
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
             dist/barq-*
+            dist/install.*
             dist/release.json
 
       - name: Publish GitHub release

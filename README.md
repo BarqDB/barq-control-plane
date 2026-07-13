@@ -40,6 +40,14 @@ downloads `release.json` and uses matching Core and control-plane images pinned
 to exact SHA-256 digests:
 
 ```sh
+curl -fsSL https://github.com/BarqDB/barq-control-plane/releases/download/v1.2.3/install.sh | sh -s -- v1.2.3
+```
+
+On Windows PowerShell, download `install.ps1` from the same release and run it
+with `-Version v1.2.3`. Both installers check the release archive checksum and
+put `barqctl`, Restic, and Cosign in one private user-owned bin directory.
+
+```sh
 barqctl init --domain db.example.com
 barqctl up
 barqctl status

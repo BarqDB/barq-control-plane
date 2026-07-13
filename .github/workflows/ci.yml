@@ -216,6 +216,22 @@ jobs:
           chmod 0755 /tmp/cosign
           /tmp/cosign version
 
+      - name: Test the release bundle installer
+        working-directory: server
+        run: |
+          sh -n deploy/install.sh
+          mkdir -p /tmp/barq-package /tmp/barq-release /tmp/barq-install
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v0.0.0-ci" -o /tmp/barq-package/barqctl ./cmd/barqctl
+          cp /tmp/restic /tmp/cosign /tmp/barq-package/
+          tar -C /tmp/barq-package -czf /tmp/barq-release/barq-v0.0.0-ci-linux-amd64.tar.gz barqctl restic cosign
+          (cd /tmp/barq-release && sha256sum barq-v0.0.0-ci-linux-amd64.tar.gz > barq-v0.0.0-ci-linux-amd64.tar.gz.sha256)
+          BARQ_INSTALL_DIR=/tmp/barq-install \
+            BARQ_RELEASE_BASE_URL=file:///tmp/barq-release \
+            sh deploy/install.sh v0.0.0-ci
+          /tmp/barq-install/barqctl version
+          /tmp/barq-install/restic version
+          /tmp/barq-install/cosign version
+
       - name: Start S3-compatible test server
         env:
           MINIO_ROOT_USER: barq-ci
