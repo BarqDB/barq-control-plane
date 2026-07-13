@@ -33,6 +33,43 @@ work, `BARQ_DEV_MODE=true` enables `dev-key` for tenant `dev`, database
 The control console is at `/control/`; embedded Swagger UI is at `/docs/`.
 Both ship inside the server binary and need no CDN.
 
+## Self-hosted deployment
+
+`barqctl` hides Docker Compose and creates all local secrets. A release build
+downloads `release.json` and uses matching Core and control-plane images pinned
+to exact SHA-256 digests:
+
+```sh
+barqctl init --domain db.example.com
+barqctl up
+barqctl status
+barqctl open
+```
+
+The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
+`--dir` to use another location. `init` creates:
+
+- a private internal Docker network;
+- one Barq data volume shared by Core and the control plane;
+- an automatic HTTPS edge using Caddy;
+- a random internal API secret and control API key;
+- a 3072-bit RSA key pair for signed device sync tokens.
+
+Only ports 80 and 443 are published. The Core internal API is not exposed.
+The generated `.env` and JWT private key use file mode `0600`.
+
+For source builds without a published release, provide both images explicitly:
+
+```sh
+go run ./cmd/barqctl init --domain db.example.com --release main \
+  --control-image ghcr.io/barqdb/barq-control-plane:main \
+  --core-image ghcr.io/barqdb/barq-core:main
+```
+
+Tagged releases publish signed GHCR images, SBOM and provenance attestations,
+fixed image digests in `release.json`, and `barqctl` binaries for Linux, macOS,
+and Windows.
+
 `go.mod` pins [`BarqDB/barq-go`](https://github.com/BarqDB/barq-go) and uses the
 workspace copy at `../client/barq-go`. Build its native library once before
 building the server:

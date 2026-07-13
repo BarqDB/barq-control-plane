@@ -1,0 +1,8 @@
+{$BARQ_DOMAIN} {
+	encode zstd gzip
+
+	@barq_sync path /barq-sync /barq-sync/*
+	reverse_proxy @barq_sync core:9090
+
+	reverse_proxy control:8080
+}

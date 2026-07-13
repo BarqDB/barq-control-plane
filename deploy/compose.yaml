@@ -1,0 +1,91 @@
+name: barq
+
+services:
+  core:
+    image: ${BARQ_CORE_IMAGE}
+    restart: unless-stopped
+    command:
+      - --root-dir
+      - /var/lib/barq
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9090"
+      - --jwt-public-key
+      - /run/secrets/barq_jwt_public
+      - --internal-api-secret
+      - ${BARQ_INTERNAL_SECRET}
+      - --log-level
+      - ${BARQ_LOG_LEVEL:-info}
+    environment:
+      BARQ_INTERNAL_SECRET: ${BARQ_INTERNAL_SECRET}
+    volumes:
+      - barq-data:/var/lib/barq
+    secrets:
+      - barq_jwt_public
+    networks:
+      - barq-internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'Authorization: Bearer '$$BARQ_INTERNAL_SECRET http://127.0.0.1:9090/internal/v1/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  control:
+    image: ${BARQ_CONTROL_IMAGE}
+    restart: unless-stopped
+    environment:
+      BARQ_LISTEN_ADDR: 0.0.0.0:8080
+      BARQ_DATA_PLANE_URL: http://core:9090
+      BARQ_DATA_PLANE_SECRET: ${BARQ_INTERNAL_SECRET}
+      BARQ_API_KEYS: ${BARQ_API_KEY}:${BARQ_TENANT}:${BARQ_DATABASE}:*
+      BARQ_DATA_DIR: /var/lib/barq
+      BARQ_ALLOW_PRIVATE_WEBHOOKS: ${BARQ_ALLOW_PRIVATE_WEBHOOKS:-false}
+    volumes:
+      - barq-data:/var/lib/barq
+    networks:
+      - barq-internal
+    depends_on:
+      core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  edge:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      BARQ_DOMAIN: ${BARQ_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - barq-internal
+      - barq-edge
+    depends_on:
+      control:
+        condition: service_healthy
+
+volumes:
+  barq-data:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  barq_jwt_public:
+    file: ./secrets/jwt-public.pem
+
+networks:
+  barq-internal:
+    internal: true
+  barq-edge:

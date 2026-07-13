@@ -15,6 +15,7 @@ concurrency:
 
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
+  BARQ_CORE_COMMIT: f22d33c6a08cd1b9b6f5c93bd2361ab278892811
 
 jobs:
   server:
@@ -58,13 +59,17 @@ jobs:
 
       - name: Build server
         working-directory: server
-        run: CGO_ENABLED=1 go build -trimpath -o barq-server ./cmd/barq-server
+        run: |
+          CGO_ENABLED=1 go build -trimpath -o barq-server ./cmd/barq-server
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=ci" -o barqctl ./cmd/barqctl
 
-      - name: Upload server binary
+      - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: barq-server-linux-amd64
-          path: server/barq-server
+          name: barq-linux-amd64
+          path: |
+            server/barq-server
+            server/barqctl
           if-no-files-found: error
           retention-days: 7
 
@@ -98,3 +103,56 @@ jobs:
           tags: barq-control-plane:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  core-image:
+    name: Core Docker build and smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out Core
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-core
+          ref: ${{ env.BARQ_CORE_COMMIT }}
+          path: core
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Core image
+        uses: docker/build-push-action@v7
+        with:
+          context: core
+          file: core/Dockerfile.server
+          load: true
+          push: false
+          tags: barq-core:ci
+          cache-from: type=gha,scope=core
+          cache-to: type=gha,mode=max,scope=core
+
+      - name: Smoke test Core image
+        run: |
+          docker run -d --name barq-core-ci \
+            -e BARQ_INTERNAL_SECRET=ci-secret \
+            -p 127.0.0.1:19090:9090 \
+            barq-core:ci \
+            --root-dir /var/lib/barq \
+            --allow-unsigned-tokens \
+            --host 0.0.0.0 \
+            --port 9090 \
+            --internal-api-secret ci-secret \
+            --log-level error
+          for _ in $(seq 1 30); do
+            if curl -fsS -H "Authorization: Bearer ci-secret" \
+              http://127.0.0.1:19090/internal/v1/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs barq-core-ci
+          exit 1
+
+      - name: Stop Core image
+        if: always()
+        run: docker rm -f barq-core-ci >/dev/null 2>&1 || true

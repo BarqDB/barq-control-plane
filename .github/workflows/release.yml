@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
+  BARQ_CORE_COMMIT: f22d33c6a08cd1b9b6f5c93bd2361ab278892811
+  CONTROL_IMAGE: ghcr.io/barqdb/barq-control-plane
+  CORE_IMAGE: ghcr.io/barqdb/barq-core
+
+jobs:
+  control-image:
+    name: Publish control-plane image
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v7
+        with:
+          path: server
+
+      - name: Check out barq-go
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: ${{ env.CONTROL_IMAGE }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=control-release
+          cache-to: type=gha,mode=max,scope=control-release
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.CONTROL_IMAGE }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign image digest
+        run: cosign sign --yes "${CONTROL_IMAGE}@${{ steps.build.outputs.digest }}"
+
+  core-image:
+    name: Publish Core image
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out Core
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-core
+          ref: ${{ env.BARQ_CORE_COMMIT }}
+          path: core
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: core
+          file: core/Dockerfile.server
+          push: true
+          tags: ${{ env.CORE_IMAGE }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/BarqDB/barq-core
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ env.BARQ_CORE_COMMIT }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=core-release
+          cache-to: type=gha,mode=max,scope=core-release
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.CORE_IMAGE }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign image digest
+        run: cosign sign --yes "${CORE_IMAGE}@${{ steps.build.outputs.digest }}"
+
+  barqctl:
+    name: Build barqctl (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v7
+        with:
+          path: server
+
+      - name: Check out barq-go module
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Build barqctl
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        working-directory: server
+        run: |
+          suffix=""
+          if [ "$GOOS" = windows ]; then suffix=".exe"; fi
+          output="barqctl-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${suffix}"
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${output}" ./cmd/barqctl
+          sha256sum "dist/${output}" > "dist/${output}.sha256"
+
+      - name: Upload barqctl
+        uses: actions/upload-artifact@v7
+        with:
+          name: barqctl-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: server/dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release manifest
+    runs-on: ubuntu-24.04
+    needs: [control-image, core-image, barqctl]
+    steps:
+      - name: Download barqctl builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: barqctl-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write fixed-digest release manifest
+        env:
+          CONTROL_DIGEST: ${{ needs.control-image.outputs.digest }}
+          CORE_DIGEST: ${{ needs.core-image.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          manifest = {
+              "version": os.environ["GITHUB_REF_NAME"],
+              "control_image": os.environ["CONTROL_IMAGE"] + "@" + os.environ["CONTROL_DIGEST"],
+              "core_image": os.environ["CORE_IMAGE"] + "@" + os.environ["CORE_DIGEST"],
+              "core_commit": os.environ["BARQ_CORE_COMMIT"],
+              "barq_go_commit": os.environ["BARQ_GO_COMMIT"],
+          }
+          with open("dist/release.json", "w", encoding="utf-8") as output:
+              json.dump(manifest, output, indent=2)
+              output.write("\n")
+          PY
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
