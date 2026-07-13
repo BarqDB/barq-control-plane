@@ -34,6 +34,7 @@ type BackupOptions struct {
 	Stdout      io.Writer
 	Stderr      io.Writer
 	Now         func() time.Time
+	skipLock    bool
 }
 
 type BackupResult struct {
@@ -59,6 +60,17 @@ func Backup(ctx context.Context, options BackupOptions) (result BackupResult, re
 	}
 	if manifest.Project == "" || manifest.Release.CoreImage == "" {
 		return result, errors.New("deployment manifest is missing project or release data; run barqctl init with a current release")
+	}
+	if !options.skipLock {
+		lock, err := acquireMaintenanceLock(dir)
+		if err != nil {
+			return result, err
+		}
+		defer lock.release()
+		manifest, err = LoadManifest(dir)
+		if err != nil {
+			return result, err
+		}
 	}
 	now := time.Now
 	if options.Now != nil {
@@ -127,7 +139,7 @@ func Backup(ctx context.Context, options BackupOptions) (result BackupResult, re
 		manifest.Release.CoreImage,
 		"-czf", "/backup/data.tar.gz", "-C", "/source", ".",
 	}
-	if err := runner.Run(ctx, dir, nil, stdout, stderr, "docker", dockerArgs...); err != nil {
+	if err := runner.Run(ctx, dir, nil, stdout, stderr, nil, "docker", dockerArgs...); err != nil {
 		return result, fmt.Errorf("archive Barq data: %w", err)
 	}
 	dataHash, err := hashFile(dataArchive)
@@ -157,6 +169,7 @@ type RestoreOptions struct {
 	Stderr       io.Writer
 	SafetyBackup bool
 	Now          func() time.Time
+	skipLock     bool
 }
 
 type RestoreResult struct {
@@ -172,6 +185,17 @@ func Restore(ctx context.Context, options RestoreOptions) (result RestoreResult,
 	if err != nil {
 		return result, err
 	}
+	if !options.skipLock {
+		lock, err := acquireMaintenanceLock(dir)
+		if err != nil {
+			return result, err
+		}
+		defer lock.release()
+		active, err = LoadManifest(dir)
+		if err != nil {
+			return result, err
+		}
+	}
 	backupPath, err := filepath.Abs(options.Backup)
 	if err != nil {
 		return result, err
@@ -186,7 +210,7 @@ func Restore(ctx context.Context, options RestoreOptions) (result RestoreResult,
 	runner := defaultRunner(options.Runner)
 	stdout, stderr := defaultWriter(options.Stdout), defaultWriter(options.Stderr)
 	if options.SafetyBackup {
-		safety, err := Backup(ctx, BackupOptions{Dir: dir, Runner: runner, Stdout: stdout, Stderr: stderr, Now: options.Now})
+		safety, err := Backup(ctx, BackupOptions{Dir: dir, Runner: runner, Stdout: stdout, Stderr: stderr, Now: options.Now, skipLock: true})
 		if err != nil {
 			return result, fmt.Errorf("create safety backup: %w", err)
 		}
@@ -212,7 +236,7 @@ func Restore(ctx context.Context, options RestoreOptions) (result RestoreResult,
 		"--mount", "type=bind,src=" + backupPath + ",dst=/backup,readonly",
 		image, "-ec", "find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar -xzf /backup/data.tar.gz -C /target",
 	}
-	if err := runner.Run(ctx, dir, nil, stdout, stderr, "docker", dockerArgs...); err != nil {
+	if err := runner.Run(ctx, dir, nil, stdout, stderr, nil, "docker", dockerArgs...); err != nil {
 		return result, fmt.Errorf("restore Barq data: %w", err)
 	}
 	for _, name := range configFiles {

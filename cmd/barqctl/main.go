@@ -95,12 +95,37 @@ func doctorCommand(args []string) error {
 }
 
 func backupCommand(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "configure":
+			return configureRemoteBackupCommand(args[1:])
+		case "check":
+			return checkRemoteBackupCommand(args[1:])
+		case "schedule":
+			return scheduleRemoteBackupCommand(args[1:])
+		}
+	}
 	set := flag.NewFlagSet("backup", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	dir := set.String("dir", "", "deployment directory")
 	output := set.String("output", "", "backup directory")
+	remote := set.Bool("remote", false, "encrypt and upload to the configured S3 repository")
 	if err := set.Parse(args); err != nil {
 		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("backup does not take positional arguments")
+	}
+	if *remote {
+		if *output != "" {
+			return errors.New("--output cannot be used with --remote")
+		}
+		result, err := deployment.RemoteBackup(context.Background(), deployment.RemoteBackupOptions{Dir: *dir, Stdout: os.Stdout, Stderr: os.Stderr})
+		if err != nil {
+			return err
+		}
+		fmt.Println("Encrypted backup uploaded. Local copy:", result.LocalPath)
+		return nil
 	}
 	result, err := deployment.Backup(context.Background(), deployment.BackupOptions{Dir: *dir, Destination: *output, Stdout: os.Stdout, Stderr: os.Stderr})
 	if err != nil {
@@ -110,29 +135,121 @@ func backupCommand(args []string) error {
 	return nil
 }
 
+func configureRemoteBackupCommand(args []string) error {
+	set := flag.NewFlagSet("backup configure", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	dir := set.String("dir", "", "deployment directory")
+	repository := set.String("repository", "", "restic S3 URL, for example s3:https://s3.example.com/bucket/barq")
+	region := set.String("region", "us-east-1", "S3 region")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("backup configure does not take positional arguments")
+	}
+	result, err := deployment.ConfigureRemoteBackup(context.Background(), deployment.ConfigureRemoteBackupOptions{
+		Dir: *dir, Repository: *repository, Region: *region,
+		AccessKey:    firstEnvironment("BARQ_BACKUP_ACCESS_KEY", "AWS_ACCESS_KEY_ID"),
+		SecretKey:    firstEnvironment("BARQ_BACKUP_SECRET_KEY", "AWS_SECRET_ACCESS_KEY"),
+		SessionToken: firstEnvironment("BARQ_BACKUP_SESSION_TOKEN", "AWS_SESSION_TOKEN"),
+		Password:     firstEnvironment("BARQ_BACKUP_PASSWORD", "RESTIC_PASSWORD"),
+		Stdout:       os.Stdout, Stderr: os.Stderr,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println("Encrypted remote backup configured.")
+	fmt.Println("Copy this recovery key to a separate password manager:", result.RecoveryKeyPath)
+	return nil
+}
+
+func checkRemoteBackupCommand(args []string) error {
+	set := flag.NewFlagSet("backup check", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	dir := set.String("dir", "", "deployment directory")
+	restoreTest := set.Bool("restore-test", false, "download and verify the latest backup")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("backup check does not take positional arguments")
+	}
+	if err := deployment.CheckRemoteBackup(context.Background(), deployment.RemoteCheckOptions{
+		Dir: *dir, RestoreTest: *restoreTest, Stdout: os.Stdout, Stderr: os.Stderr,
+	}); err != nil {
+		return err
+	}
+	if *restoreTest {
+		fmt.Println("Remote repository and full restore test passed.")
+	} else {
+		fmt.Println("Remote repository check passed.")
+	}
+	return nil
+}
+
+func scheduleRemoteBackupCommand(args []string) error {
+	set := flag.NewFlagSet("backup schedule", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	dir := set.String("dir", "", "deployment directory")
+	dailyAt := set.String("daily-at", "03:00", "daily backup time in 24-hour HH:MM format")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("backup schedule does not take positional arguments")
+	}
+	result, err := deployment.InstallBackupSchedule(context.Background(), deployment.BackupScheduleOptions{
+		Dir: *dir, DailyAt: *dailyAt, Stdout: os.Stdout, Stderr: os.Stderr,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println("Daily encrypted backups enabled:", result.DailyTimer)
+	fmt.Println("Weekly full restore tests enabled:", result.CheckTimer)
+	return nil
+}
+
 func restoreCommand(args []string) error {
 	set := flag.NewFlagSet("restore", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
 	dir := set.String("dir", "", "deployment directory")
 	backup := set.String("backup", "", "backup directory to restore")
+	snapshot := set.String("snapshot", "", "encrypted remote snapshot ID or latest")
 	yes := set.Bool("yes", false, "confirm replacement of current data")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
-	if *backup == "" {
-		return errors.New("--backup is required")
+	if (*backup == "") == (*snapshot == "") {
+		return errors.New("use exactly one of --backup or --snapshot")
 	}
 	if !*yes {
 		return errors.New("restore replaces current data; rerun with --yes")
 	}
-	result, err := deployment.Restore(context.Background(), deployment.RestoreOptions{
-		Dir: *dir, Backup: *backup, Stdout: os.Stdout, Stderr: os.Stderr, SafetyBackup: true,
-	})
+	var result deployment.RestoreResult
+	var err error
+	if *snapshot != "" {
+		result, err = deployment.RestoreRemoteBackup(context.Background(), deployment.RemoteRestoreOptions{
+			Dir: *dir, Snapshot: *snapshot, Stdout: os.Stdout, Stderr: os.Stderr,
+		})
+	} else {
+		result, err = deployment.Restore(context.Background(), deployment.RestoreOptions{
+			Dir: *dir, Backup: *backup, Stdout: os.Stdout, Stderr: os.Stderr, SafetyBackup: true,
+		})
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Println("Restore completed. Safety backup:", result.SafetyBackup)
 	return nil
+}
+
+func firstEnvironment(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func upgradeCommand(args []string) error {
@@ -250,6 +367,9 @@ Usage:
   barqctl open
   barqctl doctor
   barqctl backup
+  barqctl backup --remote
+  barqctl backup configure --repository s3:https://s3.example.com/bucket/barq
+  barqctl backup schedule --daily-at 03:00
 
 Commands:
   init      Create the deployment, secrets, and JWT key pair
@@ -258,7 +378,7 @@ Commands:
   open      Open the control plane
   logs      Show service logs
   doctor    Check configuration, health, disk, and backups
-  backup    Create a consistent local backup
+  backup    Create, upload, and check encrypted backups
   restore   Restore a verified backup after making a safety backup
   upgrade   Back up and switch to a fixed-digest release
   rollback  Back up and return to the previous release

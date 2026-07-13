@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,6 +132,7 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 		}
 		checks = append(checks, Check{Name: "backups", Status: status, Detail: fmt.Sprintf("latest is %s old: %s", age.Round(time.Minute), backupPath)})
 	}
+	checks = append(checks, remoteBackupChecks(dir, now())...)
 
 	for _, check := range checks {
 		if check.Status == CheckFail {
@@ -138,6 +140,44 @@ func Doctor(ctx context.Context, options DoctorOptions) ([]Check, error) {
 		}
 	}
 	return checks, nil
+}
+
+func remoteBackupChecks(dir string, now time.Time) []Check {
+	configPath := filepath.Join(dir, filepath.FromSlash(remoteBackupConfigName))
+	info, err := os.Stat(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return []Check{{Name: "remote backups", Status: CheckWarn, Detail: "encrypted S3 backup is not configured"}}
+	}
+	if err != nil {
+		return []Check{{Name: "remote backups", Status: CheckFail, Detail: err.Error()}}
+	}
+	checks := make([]Check, 0, 3)
+	if info.Mode().Perm()&0o077 != 0 {
+		checks = append(checks, Check{Name: "backup credentials", Status: CheckFail, Detail: fmt.Sprintf("mode %o exposes secrets", info.Mode().Perm())})
+	} else if _, err := loadRemoteBackupConfig(dir); err != nil {
+		checks = append(checks, Check{Name: "backup credentials", Status: CheckFail, Detail: err.Error()})
+	} else {
+		checks = append(checks, Check{Name: "backup credentials", Status: CheckPass, Detail: fmt.Sprintf("mode %o", info.Mode().Perm())})
+	}
+	status := loadRemoteBackupStatus(dir)
+	checks = append(checks, ageCheck("remote backups", status.LastBackupAt, now, 26*time.Hour, "no successful encrypted upload recorded"))
+	checks = append(checks, ageCheck("restore tests", status.LastRestoreTestAt, now, 8*24*time.Hour, "no successful full restore test recorded"))
+	return checks
+}
+
+func ageCheck(name string, completed *time.Time, now time.Time, maximum time.Duration, missing string) Check {
+	if completed == nil {
+		return Check{Name: name, Status: CheckWarn, Detail: missing}
+	}
+	age := now.Sub(*completed)
+	if age < 0 {
+		age = 0
+	}
+	status := CheckPass
+	if age > maximum {
+		status = CheckWarn
+	}
+	return Check{Name: name, Status: status, Detail: fmt.Sprintf("last success was %s ago", age.Round(time.Minute))}
 }
 
 type webhookHealth struct {

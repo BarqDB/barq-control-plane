@@ -33,10 +33,6 @@ func Upgrade(ctx context.Context, options UpgradeOptions) (UpgradeResult, error)
 	if err != nil {
 		return UpgradeResult{}, err
 	}
-	manifest, err := LoadManifest(dir)
-	if err != nil {
-		return UpgradeResult{}, err
-	}
 	version := strings.TrimSpace(options.Version)
 	if version == "" {
 		return UpgradeResult{}, errors.New("target release is required")
@@ -51,6 +47,15 @@ func Upgrade(ctx context.Context, options UpgradeOptions) (UpgradeResult, error)
 	}
 	if release.Version != version || !fixedImage(release.ControlImage) || !fixedImage(release.CoreImage) {
 		return UpgradeResult{}, errors.New("target release is invalid or does not use fixed image digests")
+	}
+	lock, err := acquireMaintenanceLock(dir)
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	defer lock.release()
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		return UpgradeResult{}, err
 	}
 	if release == manifest.Release {
 		return UpgradeResult{}, fmt.Errorf("Barq is already on %s", version)
@@ -71,6 +76,11 @@ func Rollback(ctx context.Context, options RollbackOptions) (UpgradeResult, erro
 	if err != nil {
 		return UpgradeResult{}, err
 	}
+	lock, err := acquireMaintenanceLock(dir)
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+	defer lock.release()
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		return UpgradeResult{}, err
@@ -87,7 +97,7 @@ func changeRelease(ctx context.Context, dir string, manifest Manifest, target Re
 	runner = defaultRunner(runner)
 	stdout, stderr = defaultWriter(stdout), defaultWriter(stderr)
 	current := manifest.Release
-	backup, err := Backup(ctx, BackupOptions{Dir: dir, Runner: runner, Stdout: stdout, Stderr: stderr, Now: now})
+	backup, err := Backup(ctx, BackupOptions{Dir: dir, Runner: runner, Stdout: stdout, Stderr: stderr, Now: now, skipLock: true})
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("pre-upgrade backup: %w", err)
 	}

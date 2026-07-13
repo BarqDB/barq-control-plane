@@ -16,6 +16,7 @@ concurrency:
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
   BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
+  RESTIC_VERSION: 0.19.1
 
 jobs:
   server:
@@ -156,3 +157,74 @@ jobs:
       - name: Stop Core image
         if: always()
         run: docker rm -f barq-core-ci >/dev/null 2>&1 || true
+
+  encrypted-backup:
+    name: Encrypted S3 backup and restore
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out control plane
+        uses: actions/checkout@v7
+        with:
+          path: server
+
+      - name: Check out barq-go module
+        uses: actions/checkout@v7
+        with:
+          repository: BarqDB/barq-go
+          ref: ${{ env.BARQ_GO_COMMIT }}
+          path: client/barq-go
+          submodules: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install checked backup tools
+        run: |
+          minio="minio.RELEASE.2025-09-07T16-13-09Z"
+          minio_base="https://dl.min.io/server/minio/release/linux-amd64/archive"
+          curl --fail --silent --show-error --location --output "/tmp/${minio}" "${minio_base}/${minio}"
+          curl --fail --silent --show-error --location --output /tmp/minio.sha256 "${minio_base}/${minio}.sha256sum"
+          (cd /tmp && sha256sum --check --strict minio.sha256)
+          mv "/tmp/${minio}" /tmp/minio
+          chmod 0755 /tmp/minio
+
+          restic="restic_${RESTIC_VERSION}_linux_amd64.bz2"
+          restic_base="https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}"
+          curl --fail --silent --show-error --location --output "/tmp/${restic}" "${restic_base}/${restic}"
+          curl --fail --silent --show-error --location --output /tmp/restic-sha256 "${restic_base}/SHA256SUMS"
+          (cd /tmp && grep "  ${restic}$" restic-sha256 | sha256sum --check --strict -)
+          bzip2 --decompress --stdout "/tmp/${restic}" > /tmp/restic
+          chmod 0755 /tmp/restic
+          /tmp/restic version
+
+      - name: Start S3-compatible test server
+        env:
+          MINIO_ROOT_USER: barq-ci
+          MINIO_ROOT_PASSWORD: barq-ci-secret-password
+        run: |
+          mkdir -p /tmp/minio-data
+          nohup /tmp/minio server /tmp/minio-data --address 127.0.0.1:19000 >/tmp/minio.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19000/minio/health/live; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/minio.log
+          exit 1
+
+      - name: Test encrypted upload and full restore
+        working-directory: server
+        env:
+          PATH: /tmp:/usr/local/bin:/usr/bin:/bin
+          AWS_ACCESS_KEY_ID: barq-ci
+          AWS_SECRET_ACCESS_KEY: barq-ci-secret-password
+          BARQ_TEST_S3_REPOSITORY: s3:http://127.0.0.1:19000/barq-ci-${{ github.run_id }}
+        run: go test -run TestS3EncryptedBackupIntegration -v ./internal/deployment
+
+      - name: Show S3 logs on failure
+        if: failure()
+        run: cat /tmp/minio.log || true

@@ -9,12 +9,12 @@ import (
 )
 
 type Runner interface {
-	Run(context.Context, string, io.Reader, io.Writer, io.Writer, string, ...string) error
+	Run(context.Context, string, io.Reader, io.Writer, io.Writer, []string, string, ...string) error
 }
 
 type ExecRunner struct{}
 
-func (ExecRunner) Run(ctx context.Context, dir string, stdin io.Reader, stdout, stderr io.Writer, name string, args ...string) error {
+func (ExecRunner) Run(ctx context.Context, dir string, stdin io.Reader, stdout, stderr io.Writer, environment []string, name string, args ...string) error {
 	if _, err := exec.LookPath(name); err != nil {
 		return fmt.Errorf("%s is required but was not found", name)
 	}
@@ -23,6 +23,7 @@ func (ExecRunner) Run(ctx context.Context, dir string, stdin io.Reader, stdout, 
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
+	command.Env = append(os.Environ(), environment...)
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
@@ -32,7 +33,7 @@ func (ExecRunner) Run(ctx context.Context, dir string, stdin io.Reader, stdout, 
 func runCompose(ctx context.Context, runner Runner, dir string, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
 	commandArgs := []string{"compose", "--env-file", ".env", "-f", "compose.yaml"}
 	commandArgs = append(commandArgs, args...)
-	if err := runner.Run(ctx, dir, stdin, stdout, stderr, "docker", commandArgs...); err != nil {
+	if err := runner.Run(ctx, dir, stdin, stdout, stderr, nil, "docker", commandArgs...); err != nil {
 		return fmt.Errorf("docker compose: %w", err)
 	}
 	return nil

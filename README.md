@@ -70,6 +70,40 @@ backup first:
 barqctl restore --backup ~/.barq/backups/20260713T010203Z --yes
 ```
 
+For encrypted off-site backups, use any S3-compatible service. The release
+bundle includes a checked Restic binary, so there is nothing else to install.
+Credentials are read from the environment once and then stored in a private
+`0600` file:
+
+```sh
+export BARQ_BACKUP_ACCESS_KEY='...'
+export BARQ_BACKUP_SECRET_KEY='...'
+barqctl backup configure \
+  --repository s3:https://s3.example.com/my-bucket/barq/client-a \
+  --region us-east-1
+unset BARQ_BACKUP_ACCESS_KEY BARQ_BACKUP_SECRET_KEY
+
+barqctl backup --remote
+barqctl backup check --restore-test
+barqctl restore --snapshot latest --yes
+```
+
+`backup configure` creates a random encryption key unless
+`BARQ_BACKUP_PASSWORD` is set. Copy the shown recovery-key file into a separate
+password manager. Losing both the server and that key makes the remote backup
+unreadable.
+
+On a Linux server with systemd, one command enables daily encrypted backups and
+a weekly full download-and-restore test:
+
+```sh
+barqctl backup schedule --daily-at 03:00
+```
+
+Remote retention keeps 7 daily, 4 weekly, and 12 monthly snapshots. Three
+verified local copies are kept for fast recovery. `barqctl doctor` warns when
+an upload is older than 26 hours or a restore test is older than 8 days.
+
 The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
 `--dir` to use another location. `init` creates:
 

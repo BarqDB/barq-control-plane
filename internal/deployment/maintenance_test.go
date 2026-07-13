@@ -14,14 +14,18 @@ import (
 )
 
 type recordingRunner struct {
-	commands []string
-	failOn   string
-	failed   bool
+	commands      []string
+	environments  [][]string
+	failOn        string
+	failAlways    string
+	failed        bool
+	restoreBackup string
 }
 
-func (runner *recordingRunner) Run(_ context.Context, _ string, _ io.Reader, stdout, _ io.Writer, name string, args ...string) error {
+func (runner *recordingRunner) Run(_ context.Context, _ string, _ io.Reader, stdout, _ io.Writer, environment []string, name string, args ...string) error {
 	command := name + " " + strings.Join(args, " ")
 	runner.commands = append(runner.commands, command)
+	runner.environments = append(runner.environments, append([]string(nil), environment...))
 	if strings.Contains(command, "compose --env-file .env -f compose.yaml ps --format json") {
 		_, _ = io.WriteString(stdout, `[{"Service":"core","State":"running","Health":"healthy"},{"Service":"control","State":"running","Health":"healthy"},{"Service":"edge","State":"running","Health":""}]`)
 	}
@@ -37,8 +41,26 @@ func (runner *recordingRunner) Run(_ context.Context, _ string, _ io.Reader, std
 			}
 		}
 	}
+	if filepath.Base(name) == "restic" || filepath.Base(name) == "restic.exe" {
+		if len(args) > 0 && args[0] == "restore" && runner.restoreBackup != "" {
+			for index, arg := range args {
+				if arg == "--target" && index+1 < len(args) {
+					target := filepath.Join(args[index+1], "restored", filepath.Base(runner.restoreBackup))
+					if err := os.MkdirAll(target, 0o700); err != nil {
+						return err
+					}
+					if err := os.CopyFS(target, os.DirFS(runner.restoreBackup)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
 	if runner.failOn != "" && !runner.failed && strings.Contains(command, runner.failOn) {
 		runner.failed = true
+		return context.DeadlineExceeded
+	}
+	if runner.failAlways != "" && strings.Contains(command, runner.failAlways) {
 		return context.DeadlineExceeded
 	}
 	return nil
@@ -70,6 +92,19 @@ func TestBackupCreatesChecksummedConsistentSnapshot(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("commands do not contain %q:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestMaintenanceLockRejectsOverlappingWork(t *testing.T) {
+	dir := initTestDeployment(t)
+	lock, err := acquireMaintenanceLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	_, err = Backup(context.Background(), BackupOptions{Dir: dir, Destination: filepath.Join(t.TempDir(), "backup"), Runner: &recordingRunner{}})
+	if err == nil || !strings.Contains(err.Error(), "another Barq maintenance command") {
+		t.Fatalf("unexpected lock error: %v", err)
 	}
 }
 
@@ -163,6 +198,114 @@ func TestDoctorReportsDeploymentHealth(t *testing.T) {
 	}
 }
 
+func TestEncryptedRemoteBackupAndRestoreCheck(t *testing.T) {
+	dir := initTestDeployment(t)
+	runner := &recordingRunner{}
+	configured, err := ConfigureRemoteBackup(context.Background(), ConfigureRemoteBackupOptions{
+		Dir: dir, Repository: "s3:https://s3.example.com/backups/client-a", Region: "eu-west-1",
+		AccessKey: "access", SecretKey: "secret", Runner: runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.RecoveryKeyPath == "" {
+		t.Fatal("recovery key path is empty")
+	}
+	for _, path := range []string{filepath.Join(dir, filepath.FromSlash(remoteBackupConfigName)), configured.RecoveryKeyPath} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("secret file mode for %s: %v %v", path, info, err)
+		}
+	}
+	result, err := RemoteBackup(context.Background(), RemoteBackupOptions{
+		Dir: dir, Runner: runner, Now: func() time.Time { return time.Date(2026, 7, 13, 5, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.LocalPath == "" {
+		t.Fatal("remote backup did not keep a local copy")
+	}
+	joined := strings.Join(runner.commands, "\n")
+	if !strings.Contains(joined, "restic backup") || !strings.Contains(joined, "restic forget") {
+		t.Fatalf("remote commands missing:\n%s", joined)
+	}
+	environments := strings.Join(flatten(runner.environments), "\n")
+	if !strings.Contains(environments, "RESTIC_PASSWORD=") || !strings.Contains(environments, "AWS_SECRET_ACCESS_KEY=secret") {
+		t.Fatalf("restic environment is incomplete: %v", runner.environments)
+	}
+	if strings.Contains(joined, "secret") {
+		t.Fatal("S3 secret leaked into command arguments")
+	}
+	runner.restoreBackup = result.LocalPath
+	if err := CheckRemoteBackup(context.Background(), RemoteCheckOptions{Dir: dir, Runner: runner, RestoreTest: true}); err != nil {
+		t.Fatal(err)
+	}
+	status := loadRemoteBackupStatus(dir)
+	if status.LastBackupAt == nil || status.LastCheckAt == nil || status.LastRestoreTestAt == nil {
+		t.Fatalf("remote status was not recorded: %+v", status)
+	}
+}
+
+func TestRemoteBackupReconfigureFailureKeepsWorkingCredentials(t *testing.T) {
+	dir := initTestDeployment(t)
+	if _, err := ConfigureRemoteBackup(context.Background(), ConfigureRemoteBackupOptions{
+		Dir: dir, Repository: "s3:https://s3.example.com/backups/working",
+		AccessKey: "access", SecretKey: "working-secret", Runner: &recordingRunner{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, filepath.FromSlash(remoteBackupConfigName))
+	before := readTestFile(t, configPath)
+	_, err := ConfigureRemoteBackup(context.Background(), ConfigureRemoteBackupOptions{
+		Dir: dir, Repository: "s3:https://s3.example.com/backups/broken",
+		AccessKey: "bad", SecretKey: "bad", Runner: &recordingRunner{failAlways: "restic"},
+	})
+	if err == nil {
+		t.Fatal("broken repository configuration was accepted")
+	}
+	if after := readTestFile(t, configPath); after != before {
+		t.Fatal("failed reconfiguration replaced working credentials")
+	}
+}
+
+func TestS3EncryptedBackupIntegration(t *testing.T) {
+	repository := os.Getenv("BARQ_TEST_S3_REPOSITORY")
+	if repository == "" {
+		t.Skip("BARQ_TEST_S3_REPOSITORY is not set")
+	}
+	dir := initTestDeployment(t)
+	if _, err := ConfigureRemoteBackup(context.Background(), ConfigureRemoteBackupOptions{
+		Dir: dir, Repository: repository, Region: "us-east-1",
+		AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"), SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		Password: "barq-ci-restic-password", Runner: ExecRunner{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(t.TempDir(), "barq-backup")
+	if _, err := Backup(context.Background(), BackupOptions{
+		Dir: dir, Destination: local, Runner: &recordingRunner{},
+		Now: func() time.Time { return time.Date(2026, 7, 13, 6, 0, 0, 0, time.UTC) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadRemoteBackupConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runRestic(context.Background(), ExecRunner{}, dir, config, io.Discard, io.Discard,
+		"backup", local, "--host", manifest.Project, "--tag", "barq-ci"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRemoteBackup(context.Background(), RemoteCheckOptions{Dir: dir, Runner: ExecRunner{}, RestoreTest: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -218,4 +361,12 @@ func hasCheck(checks []Check, name string, status CheckStatus) bool {
 		}
 	}
 	return false
+}
+
+func flatten(values [][]string) []string {
+	var result []string
+	for _, value := range values {
+		result = append(result, value...)
+	}
+	return result
 }

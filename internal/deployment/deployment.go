@@ -183,6 +183,13 @@ func Compose(ctx context.Context, dir string, stdout, stderr io.Writer, args ...
 	if _, err := LoadManifest(dir); err != nil {
 		return err
 	}
+	if len(args) > 0 && args[0] == "up" {
+		lock, err := acquireMaintenanceLock(dir)
+		if err != nil {
+			return err
+		}
+		defer lock.release()
+	}
 	return runCompose(ctx, ExecRunner{}, dir, processInput(), stdout, stderr, args...)
 }
 
@@ -220,7 +227,7 @@ func Open(dir string) (string, error) {
 	default:
 		name, args = "xdg-open", []string{manifest.URL}
 	}
-	if err := (ExecRunner{}).Run(context.Background(), dir, nil, io.Discard, io.Discard, name, args...); err != nil {
+	if err := (ExecRunner{}).Run(context.Background(), dir, nil, io.Discard, io.Discard, nil, name, args...); err != nil {
 		return manifest.URL, fmt.Errorf("open browser: %w", err)
 	}
 	return manifest.URL, nil

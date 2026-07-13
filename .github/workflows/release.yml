@@ -14,6 +14,7 @@ permissions:
 env:
   BARQ_GO_COMMIT: 2a3691750fc0c98cc39657a3c4cb04f3c4596a17
   BARQ_CORE_COMMIT: 8188d736705225a840a7982fce66ef12cbe917b8
+  RESTIC_VERSION: 0.19.1
   CONTROL_IMAGE: ghcr.io/barqdb/barq-control-plane
   CORE_IMAGE: ghcr.io/barqdb/barq-core
 
@@ -182,9 +183,33 @@ jobs:
         run: |
           suffix=""
           if [ "$GOOS" = windows ]; then suffix=".exe"; fi
-          output="barqctl-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${suffix}"
-          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${output}" ./cmd/barqctl
-          sha256sum "dist/${output}" > "dist/${output}.sha256"
+          mkdir -p "dist/package"
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/package/barqctl${suffix}" ./cmd/barqctl
+
+          base="https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}"
+          curl --fail --silent --show-error --location --output /tmp/SHA256SUMS "${base}/SHA256SUMS"
+          if [ "$GOOS" = windows ]; then
+            asset="restic_${RESTIC_VERSION}_${GOOS}_${GOARCH}.zip"
+            curl --fail --silent --show-error --location --output "/tmp/${asset}" "${base}/${asset}"
+            (cd /tmp && grep "  ${asset}$" SHA256SUMS | sha256sum --check --strict -)
+            unzip -p "/tmp/${asset}" > "dist/package/restic.exe"
+          else
+            asset="restic_${RESTIC_VERSION}_${GOOS}_${GOARCH}.bz2"
+            curl --fail --silent --show-error --location --output "/tmp/${asset}" "${base}/${asset}"
+            (cd /tmp && grep "  ${asset}$" SHA256SUMS | sha256sum --check --strict -)
+            bzip2 --decompress --stdout "/tmp/${asset}" > "dist/package/restic"
+            chmod 0755 "dist/package/restic"
+          fi
+
+          archive="barq-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = windows ]; then
+            (cd dist/package && zip -9 "../${archive}.zip" barqctl.exe restic.exe)
+            sha256sum "dist/${archive}.zip" > "dist/${archive}.zip.sha256"
+          else
+            tar -C dist/package -czf "dist/${archive}.tar.gz" barqctl restic
+            sha256sum "dist/${archive}.tar.gz" > "dist/${archive}.tar.gz.sha256"
+          fi
+          rm -rf dist/package
 
       - name: Upload barqctl
         uses: actions/upload-artifact@v7
