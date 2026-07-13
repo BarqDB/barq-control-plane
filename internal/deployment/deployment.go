@@ -30,7 +30,7 @@ const (
 	CurrentInternalProtocol = 1
 	CurrentCoreDataFormat   = 1
 	CurrentControlSchema    = 1
-	CurrentBundleVersion    = 1
+	CurrentBundleVersion    = 2
 )
 
 type Manifest struct {

@@ -25,13 +25,17 @@ BARQ_API_KEYS='dev-key:dev:default:*' \
 go run ./cmd/barq-server
 ```
 
-The public API listens on `127.0.0.1:8080`. Set `BARQ_API_KEYS` to a
-comma-separated list of `key:tenant:database:actions` entries. For local-only
-work, `BARQ_DEV_MODE=true` enables `dev-key` for tenant `dev`, database
-`default`.
+The public API listens on `127.0.0.1:8080`. `BARQ_API_KEYS` is used only on the
+first start. Barq stores each SHA-256 key digest in `control.barq`; raw keys are
+never stored. Later changes to the environment do not recreate a rotated or
+revoked key. For local-only work, `BARQ_DEV_MODE=true` bootstraps `dev-key` as a
+global development key.
 
 The control console is at `/control/`; embedded Swagger UI is at `/docs/`.
-Both ship inside the server binary and need no CDN.
+Both ship inside the server binary and need no CDN. A global admin can register
+tenants, add logical databases, create scoped service keys, rotate keys, and
+revoke keys from the control console. New key values are shown once. Disabling
+a tenant stops its scoped keys and webhook polling without deleting Barq data.
 
 ## Self-hosted deployment
 
@@ -59,6 +63,7 @@ Day-to-day maintenance also stays behind `barqctl`:
 ```sh
 barqctl doctor                 # containers, disk, backups, queues, dead letters
 barqctl logs --tail 200
+barqctl access set             # paste a new admin key after rotating it
 barqctl backup
 barqctl upgrade --release v1.2.0
 barqctl rollback
@@ -129,7 +134,9 @@ The generated `.env` and JWT private key use file mode `0600`.
 Each domain gets stable Compose project, volume, and network names. The default
 bundle owns public ports 80 and 443, so it expects one public client stack per
 host. The later SaaS shape is one small isolated host per client, with several
-tenants inside that client's stack.
+tenants inside that client's stack. The key created by `barqctl init` is the
+global admin key for that stack. The `default/default` tenant and database are
+registered on first start; more tenants can be added in the control console.
 
 For source builds without a published release, provide both images explicitly:
 
@@ -141,7 +148,8 @@ go run ./cmd/barqctl init --domain db.example.com --release main \
 
 Tagged releases publish signed GHCR images, SBOM and provenance attestations,
 fixed image digests in `release.json`, and `barqctl` binaries for Linux, macOS,
-and Windows. The release bundle includes Cosign. `barqctl init` and `upgrade`
+and Windows. Both server images support Linux AMD64 and ARM64. The release
+bundle includes Cosign. `barqctl init` and `upgrade`
 reject an image unless its digest was signed by the tagged Barq release
 workflow. Rollback uses a fixed digest that was verified when first installed,
 so emergency recovery does not need the signing service to be online.

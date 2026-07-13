@@ -1,0 +1,28 @@
+# The deployment-owned Core image. Build with a pinned Barq Core checkout as
+# the context. System OpenSSL avoids architecture-specific dependency archives.
+FROM debian:bookworm AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake g++ ninja-build libssl-dev libuv1-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . ./core
+RUN cmake -S core -B build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBARQ_NO_TESTS=ON \
+      -DBARQ_BUILD_SERVER=ON \
+      -DBARQ_ENABLE_SYNC=ON \
+      -DBARQ_USE_SYSTEM_OPENSSL=ON \
+      -DBARQ_USE_SYSTEM_OPENSSL_PATHS=ON \
+    && cmake --build build --target BarqSyncServer -j 4
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libssl3 libuv1 zlib1g \
+    && install -d -o 65532 -g 65532 /var/lib/barq \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/src/barq/sync/noinst/server/barq-server /usr/local/bin/barq-core
+USER 65532:65532
+EXPOSE 9090
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
+    CMD curl -fsS -H "Authorization: Bearer ${BARQ_INTERNAL_SECRET}" http://127.0.0.1:9090/internal/v1/health || exit 1
+ENTRYPOINT ["/usr/local/bin/barq-core"]

@@ -122,6 +122,38 @@ func TestLoadManifestNeedsInitializedDeployment(t *testing.T) {
 	}
 }
 
+func TestSetAPIKeyUpdatesOnlyPrivateEnvironment(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "barq")
+	if _, err := Init(InitOptions{Dir: dir, Domain: "db.example.com", Version: "main", ControlImage: "control:test", CoreImage: "core:test"}); err != nil {
+		t.Fatal(err)
+	}
+	before := readTestFile(t, filepath.Join(dir, ".env"))
+	old, err := environmentValue(filepath.Join(dir, ".env"), "BARQ_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKey := "barq_sk_0123456789abcdefghijklmnopqrstuvwxyz"
+	if err := SetAPIKey(dir, newKey); err != nil {
+		t.Fatal(err)
+	}
+	after := readTestFile(t, filepath.Join(dir, ".env"))
+	if strings.Contains(after, old) || !strings.Contains(after, "BARQ_API_KEY="+newKey) {
+		t.Fatalf("operator key was not replaced: %s", after)
+	}
+	if strings.Count(before, "BARQ_API_KEY=") != strings.Count(after, "BARQ_API_KEY=") {
+		t.Fatal("operator key update duplicated the environment entry")
+	}
+	if mode := fileMode(t, filepath.Join(dir, ".env")); mode != 0o600 {
+		t.Fatalf(".env mode = %o", mode)
+	}
+	if err := SetAPIKey(dir, "bad key"); err == nil {
+		t.Fatal("whitespace API key was accepted")
+	}
+	if got := readTestFile(t, filepath.Join(dir, ".env")); got != after {
+		t.Fatal("invalid API key changed the environment")
+	}
+}
+
 func readTestFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

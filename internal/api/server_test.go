@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/barqdb/barq-server/internal/api"
@@ -34,6 +35,9 @@ func TestWebhookRegistrationAPI(t *testing.T) {
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("register status %d: %s", response.StatusCode, readBody(response))
 	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("one-time webhook secret response is cacheable")
+	}
 	var registered webhooks.Registered
 	if err := json.NewDecoder(response.Body).Decode(&registered); err != nil {
 		t.Fatal(err)
@@ -58,6 +62,12 @@ func TestEmbeddedControlAndSwagger(t *testing.T) {
 		body := readBody(response)
 		if response.StatusCode != http.StatusOK || body == "" {
 			t.Fatalf("embedded route %s: status=%d body=%q", path, response.StatusCode, body)
+		}
+		if path == "/control/" && !strings.Contains(body, "Service keys") {
+			t.Fatal("embedded control UI is missing access management")
+		}
+		if path == "/docs/openapi.yaml" && !strings.Contains(body, "/v1/admin/api-keys") {
+			t.Fatal("public OpenAPI is missing access management")
 		}
 	}
 }
@@ -91,6 +101,80 @@ func TestOperationalHealthRequiresKeyAndReturnsScopedCounts(t *testing.T) {
 	}
 }
 
+func TestTenantAndAPIKeyAdmin(t *testing.T) {
+	server := testServer(t)
+	forbiddenTenant := request(t, server.Client(), http.MethodPost, server.URL+"/v1/admin/tenants", "key-a", map[string]any{
+		"id": "blocked", "name": "Blocked", "databases": []string{"main"},
+	}, nil)
+	if forbiddenTenant.StatusCode != http.StatusForbidden {
+		t.Fatalf("scoped key created a tenant: %d", forbiddenTenant.StatusCode)
+	}
+	_ = forbiddenTenant.Body.Close()
+	createdTenant := request(t, server.Client(), http.MethodPost, server.URL+"/v1/admin/tenants", "root-key", map[string]any{
+		"id": "b", "name": "Tenant B", "databases": []string{"main", "audit"},
+	}, nil)
+	if createdTenant.StatusCode != http.StatusCreated {
+		t.Fatalf("create tenant status %d: %s", createdTenant.StatusCode, readBody(createdTenant))
+	}
+	_ = createdTenant.Body.Close()
+	forbiddenKey := request(t, server.Client(), http.MethodPost, server.URL+"/v1/admin/api-keys", "key-a", map[string]any{
+		"label": "Cross tenant", "tenant": "b", "database": "main", "actions": []string{"read"},
+	}, nil)
+	if forbiddenKey.StatusCode != http.StatusForbidden {
+		t.Fatalf("scoped key created a cross-tenant key: %d", forbiddenKey.StatusCode)
+	}
+	_ = forbiddenKey.Body.Close()
+
+	createdKey := request(t, server.Client(), http.MethodPost, server.URL+"/v1/admin/api-keys", "root-key", map[string]any{
+		"label": "Tenant B app", "tenant": "b", "database": "main", "actions": []string{"read", "write"},
+	}, nil)
+	if createdKey.StatusCode != http.StatusCreated {
+		t.Fatalf("create key status %d: %s", createdKey.StatusCode, readBody(createdKey))
+	}
+	if createdKey.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("one-time API key response is cacheable")
+	}
+	var created auth.CreatedServiceKey
+	if err := json.NewDecoder(createdKey.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	_ = createdKey.Body.Close()
+	if created.Secret == "" || created.Key.ID == "" {
+		t.Fatalf("incomplete one-time key response: %+v", created)
+	}
+
+	list := request(t, server.Client(), http.MethodGet, server.URL+"/v1/admin/api-keys", "root-key", nil, nil)
+	listBody := readBody(list)
+	if list.StatusCode != http.StatusOK || !strings.Contains(listBody, created.Key.ID) || strings.Contains(listBody, "digest") || strings.Contains(listBody, created.Secret) {
+		t.Fatalf("unsafe API key list: status=%d body=%s", list.StatusCode, listBody)
+	}
+
+	oldSecret := created.Secret
+	rotatedResponse := request(t, server.Client(), http.MethodPost, server.URL+"/v1/admin/api-keys/"+created.Key.ID+":rotate", "root-key", map[string]any{}, nil)
+	if rotatedResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("rotate status %d: %s", rotatedResponse.StatusCode, readBody(rotatedResponse))
+	}
+	var rotated auth.CreatedServiceKey
+	if err := json.NewDecoder(rotatedResponse.Body).Decode(&rotated); err != nil {
+		t.Fatal(err)
+	}
+	_ = rotatedResponse.Body.Close()
+	if rotated.Secret == "" || rotated.Secret == oldSecret {
+		t.Fatal("rotation did not return a new one-time secret")
+	}
+
+	oldRequest := request(t, server.Client(), http.MethodGet, server.URL+"/v1/tenants/b/databases/main/objects/Task/one", oldSecret, nil, nil)
+	if oldRequest.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("rotated secret still works: %d", oldRequest.StatusCode)
+	}
+	_ = oldRequest.Body.Close()
+	newRequest := request(t, server.Client(), http.MethodGet, server.URL+"/v1/tenants/b/databases/main/objects/Task/one", rotated.Secret, nil, nil)
+	if newRequest.StatusCode == http.StatusUnauthorized || newRequest.StatusCode == http.StatusForbidden {
+		t.Fatalf("replacement secret was rejected before the data plane: %d", newRequest.StatusCode)
+	}
+	_ = newRequest.Body.Close()
+}
+
 func testServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	data, err := dataplane.NewHTTPDataPlane("http://127.0.0.1:1", "test-secret", nil)
@@ -104,9 +188,12 @@ func testServer(t *testing.T) *httptest.Server {
 	t.Cleanup(func() { _ = store.Close() })
 	runtime := transforms.NewQuickJS()
 	hooks := webhooks.NewService(store, runtime, true)
-	keys := auth.NewMemoryKeyStore()
-	keys.Add("key-a", auth.ServiceKey{Tenant: "a", Database: "main", Actions: []string{"*"}})
-	keys.Add("key-read", auth.ServiceKey{Tenant: "a", Database: "main", Actions: []string{"read"}})
+	keys := auth.NewManager(store)
+	if err := keys.Bootstrap(t.Context(), auth.BootstrapOptions{
+		APIKeys: "root-key:*:*:*,key-a:a:main:*,key-read:a:main:read",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(api.New(data, hooks, keys).Handler())
 	t.Cleanup(server.Close)
 	return server

@@ -1,6 +1,8 @@
 const state = {
   apiKey: sessionStorage.getItem("barq.control.key") || "",
   hooks: [],
+  tenants: [],
+  apiKeys: [],
   health: null,
   selected: null,
 };
@@ -12,6 +14,8 @@ const drawer = $("#drawer");
 const scrim = $("#scrim");
 const credentialsDialog = $("#credentials-dialog");
 const hookDialog = $("#hook-dialog");
+const tenantDialog = $("#tenant-dialog");
+const keyDialog = $("#key-dialog");
 let toastTimer;
 
 function toast(message, error = false) {
@@ -56,7 +60,7 @@ async function load() {
     credentialsDialog.showModal();
     return;
   }
-  await loadHooks();
+  await Promise.all([loadHooks(), loadAccess()]);
 }
 
 async function loadHooks() {
@@ -68,6 +72,111 @@ async function loadHooks() {
     if (error.status === 401 || error.status === 403) credentialsDialog.showModal();
     toast(error.message, true);
   }
+}
+
+async function loadAccess() {
+  let visible = false;
+  try {
+    const result = await api("/v1/admin/tenants");
+    state.tenants = result.tenants || [];
+    renderTenants();
+    $("#tenant-panel").hidden = false;
+    visible = true;
+  } catch (error) {
+    state.tenants = [];
+    $("#tenant-panel").hidden = true;
+    if (error.status !== 403) toast(`Tenants: ${error.message}`, true);
+  }
+  try {
+    const result = await api("/v1/admin/api-keys");
+    state.apiKeys = result.api_keys || [];
+    renderKeys();
+    $("#key-panel").hidden = false;
+    visible = true;
+  } catch (error) {
+    state.apiKeys = [];
+    $("#key-panel").hidden = true;
+    if (error.status !== 403) toast(`API keys: ${error.message}`, true);
+  }
+  $("#access-workspace").hidden = !visible;
+  $("#access-nav").hidden = !visible;
+}
+
+function renderTenants() {
+  const list = $("#tenant-list");
+  if (!state.tenants.length) {
+    list.replaceChildren(emptyAdminNode("NO TENANTS REGISTERED"));
+    return;
+  }
+  list.replaceChildren(...state.tenants.map((tenant) => {
+    const row = adminRecord(tenant.name || tenant.id, `${tenant.id} · ${(tenant.databases || []).join(" / ")}`, tenant.enabled);
+    const actions = row.querySelector(".record-actions");
+    actions.append(
+      recordButton("EDIT", () => openTenantDialog(tenant)),
+      recordButton(tenant.enabled ? "DISABLE" : "ENABLE", () => toggleTenant(tenant), tenant.enabled ? "danger" : ""),
+    );
+    return row;
+  }));
+}
+
+function renderKeys() {
+  const list = $("#key-list");
+  if (!state.apiKeys.length) {
+    list.replaceChildren(emptyAdminNode("NO KEYS IN THIS SCOPE"));
+    return;
+  }
+  list.replaceChildren(...state.apiKeys.map((key) => {
+    const scope = `${key.tenant} / ${key.database}`;
+    const label = key.label || key.id;
+    const row = adminRecord(label, `${scope} · ${(key.actions || []).join(" / ")}`, key.enabled);
+    const actions = row.querySelector(".record-actions");
+    if (key.enabled) {
+      actions.append(
+        recordButton("ROTATE", () => rotateAPIKey(key.id)),
+        recordButton("REVOKE", () => revokeAPIKey(key.id), "danger"),
+      );
+    } else {
+      actions.append(recordButton("ACTIVATE", () => activateAPIKey(key.id)));
+    }
+    return row;
+  }));
+}
+
+function adminRecord(titleText, metaText, enabled) {
+  const row = document.createElement("div");
+  row.className = `admin-record ${enabled ? "" : "inactive"}`;
+  const body = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "record-title";
+  const stateDot = document.createElement("span");
+  stateDot.className = "record-state";
+  const heading = document.createElement("h4");
+  heading.textContent = titleText;
+  title.append(stateDot, heading);
+  const meta = document.createElement("p");
+  meta.className = "record-meta";
+  meta.textContent = metaText;
+  body.append(title, meta);
+  const actions = document.createElement("div");
+  actions.className = "record-actions";
+  row.append(body, actions);
+  return row;
+}
+
+function recordButton(label, handler, style = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = style;
+  button.textContent = label;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function emptyAdminNode(message) {
+  const node = document.createElement("div");
+  node.className = "empty-records";
+  node.textContent = message;
+  return node;
 }
 
 function renderHealth(online) {
@@ -239,8 +348,10 @@ async function testTransform(id) {
   } catch (error) { toast(error.message, true); }
 }
 
-function showSecret(secret) {
+function showSecret(secret, title = "ONE-TIME SIGNING SECRET") {
+  $("#secret-title").textContent = title;
   $("#secret-value").textContent = secret;
+  $("#secret-note").textContent = title.includes("SERVICE") ? "Rotated the deployment admin key? Run barqctl access set on the server and paste this value." : "";
   $("#secret-panel").hidden = false;
 }
 
@@ -254,14 +365,18 @@ $("#credentials-form").addEventListener("submit", async (event) => {
   if (!state.apiKey) return;
   sessionStorage.setItem("barq.control.key", state.apiKey);
   credentialsDialog.close();
-  await loadHooks();
+  await Promise.all([loadHooks(), loadAccess()]);
 });
 $("#forget-key").addEventListener("click", () => {
   state.apiKey = "";
   sessionStorage.removeItem("barq.control.key");
   $("#api-key").value = "";
   state.hooks = [];
+  state.tenants = [];
+  state.apiKeys = [];
   renderHooks();
+  $("#access-workspace").hidden = true;
+  $("#access-nav").hidden = true;
 });
 
 $("#new-hook").addEventListener("click", () => hookDialog.showModal());
@@ -288,13 +403,135 @@ $("#hook-form").addEventListener("submit", async (event) => {
   } catch (error) { toast(error.message, true); }
 });
 
+function openTenantDialog(tenant = null) {
+  const form = $("#tenant-form");
+  form.reset();
+  form.dataset.editing = tenant?.id || "";
+  $("#tenant-dialog-title").textContent = tenant ? "Edit tenant" : "Add tenant";
+  $("#tenant-id").readOnly = Boolean(tenant);
+  if (tenant) {
+    $("#tenant-id").value = tenant.id;
+    $("#tenant-name").value = tenant.name;
+    $("#tenant-databases").value = (tenant.databases || []).join(", ");
+  }
+  tenantDialog.showModal();
+}
+
+async function toggleTenant(tenant) {
+  const enabled = !tenant.enabled;
+  if (!enabled && !confirm(`Disable ${tenant.name}? Its data stays on disk, but its keys and webhook polling stop.`)) return;
+  try {
+    await api(`/v1/admin/tenants/${encodeURIComponent(tenant.id)}`, {method: "PATCH", body: JSON.stringify({enabled})});
+    await loadAccess();
+    toast(enabled ? "Tenant enabled" : "Tenant disabled");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function rotateAPIKey(id) {
+  if (!confirm("Rotate this key? The old key stops working as soon as the new one is made.")) return;
+  try {
+    const result = await api(`/v1/admin/api-keys/${encodeURIComponent(id)}:rotate`, {method: "POST", body: "{}"});
+    showSecret(result.secret, "ONE-TIME SERVICE API KEY");
+    await loadAccess();
+    toast("API key rotated");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function revokeAPIKey(id) {
+  if (!confirm("Revoke this API key? Its record stays for audit, but the secret stops working.")) return;
+  try {
+    await api(`/v1/admin/api-keys/${encodeURIComponent(id)}`, {method: "DELETE"});
+    await loadAccess();
+    toast("API key revoked");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function activateAPIKey(id) {
+  try {
+    await api(`/v1/admin/api-keys/${encodeURIComponent(id)}`, {method: "PATCH", body: JSON.stringify({enabled: true})});
+    await loadAccess();
+    toast("API key activated");
+  } catch (error) { toast(error.message, true); }
+}
+
+$("#new-tenant").addEventListener("click", () => openTenantDialog());
+$("#tenant-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const id = form.get("id").trim();
+  const input = {name: form.get("name").trim(), databases: splitList(form.get("databases"))};
+  const editing = formNode.dataset.editing;
+  try {
+    if (editing) {
+      await api(`/v1/admin/tenants/${encodeURIComponent(editing)}`, {method: "PATCH", body: JSON.stringify(input)});
+    } else {
+      await api("/v1/admin/tenants", {method: "POST", body: JSON.stringify({...input, id})});
+    }
+    tenantDialog.close();
+    await loadAccess();
+    toast(editing ? "Tenant updated" : "Tenant created");
+  } catch (error) { toast(error.message, true); }
+});
+
+function openKeyDialog() {
+  const form = $("#key-form");
+  form.reset();
+  const select = $("#key-tenant");
+  select.replaceChildren();
+  const global = document.createElement("option");
+  global.value = "*";
+  global.textContent = "Global admin (*)";
+  select.append(global);
+  state.tenants.filter((tenant) => tenant.enabled).forEach((tenant) => {
+    const option = document.createElement("option");
+    option.value = tenant.id;
+    option.textContent = `${tenant.name} (${tenant.id})`;
+    select.append(option);
+  });
+  if (state.tenants.some((tenant) => tenant.enabled)) select.selectedIndex = 1;
+  select.dispatchEvent(new Event("change"));
+  keyDialog.showModal();
+}
+
+$("#key-tenant").addEventListener("change", (event) => {
+  const database = $("#key-form input[name='database']");
+  const actions = $("#key-form input[name='actions']");
+  if (event.currentTarget.value === "*") {
+    database.value = "*";
+    actions.value = "*";
+  } else {
+    if (database.value === "*") database.value = "main";
+    if (actions.value === "*") actions.value = "read, write";
+  }
+});
+$("#new-key").addEventListener("click", openKeyDialog);
+$("#key-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formNode = event.currentTarget;
+  const form = new FormData(formNode);
+  const input = {
+    label: form.get("label").trim(),
+    tenant: form.get("tenant"),
+    database: form.get("database").trim(),
+    actions: splitList(form.get("actions")),
+  };
+  try {
+    const result = await api("/v1/admin/api-keys", {method: "POST", body: JSON.stringify(input)});
+    keyDialog.close();
+    showSecret(result.secret, "ONE-TIME SERVICE API KEY");
+    await loadAccess();
+    toast("API key created");
+  } catch (error) { toast(error.message, true); }
+});
+
 $("#search").addEventListener("input", renderHooks);
 $("#drawer-close").addEventListener("click", closeDrawer);
 scrim.addEventListener("click", closeDrawer);
 $("#secret-close").addEventListener("click", () => { $("#secret-panel").hidden = true; });
 $("#copy-secret").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("#secret-value").textContent);
-  toast("Signing secret copied");
+  toast("Secret copied");
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && drawer.classList.contains("open")) closeDrawer();

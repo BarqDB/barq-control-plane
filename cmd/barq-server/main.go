@@ -62,7 +62,7 @@ func main() {
 	runtime := transforms.NewQuickJS()
 	allowPrivate := strings.EqualFold(os.Getenv("BARQ_ALLOW_PRIVATE_WEBHOOKS"), "true")
 	hookService := webhooks.NewService(store, runtime, allowPrivate)
-	keys, scopes, err := makeKeys()
+	keys, err := makeKeys(store)
 	if err != nil {
 		logger.Error("configure API keys", "error", err)
 		os.Exit(1)
@@ -78,7 +78,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if hasCapability(health, "changes") {
-		go runDispatcher(ctx, logger, dispatcher, scopes)
+		go runDispatcher(ctx, logger, dispatcher, keys)
 	} else {
 		logger.Info("webhook change polling disabled", "reason", "data plane does not advertise changes")
 	}
@@ -149,40 +149,43 @@ func controlDatabasePath() string {
 	return filepath.Join(dataDir, "_system", "control.barq")
 }
 
-func makeKeys() (*auth.MemoryKeyStore, []dataplane.Scope, error) {
-	store := auth.NewMemoryKeyStore()
-	config := os.Getenv("BARQ_API_KEYS")
-	if config == "" {
-		if !strings.EqualFold(os.Getenv("BARQ_DEV_MODE"), "true") {
-			return nil, nil, errors.New("BARQ_API_KEYS is required (set BARQ_DEV_MODE=true only for local development)")
-		}
-		config = "dev-key:dev:default:*"
+func makeKeys(store control.Store) (*auth.Manager, error) {
+	manager := auth.NewManager(store)
+	err := manager.Bootstrap(context.Background(), auth.BootstrapOptions{
+		APIKeys:         os.Getenv("BARQ_API_KEYS"),
+		DevMode:         strings.EqualFold(os.Getenv("BARQ_DEV_MODE"), "true"),
+		DefaultTenant:   os.Getenv("BARQ_BOOTSTRAP_TENANT"),
+		DefaultDatabase: os.Getenv("BARQ_BOOTSTRAP_DATABASE"),
+	})
+	if err != nil {
+		return nil, err
 	}
-	seenScopes := map[dataplane.Scope]bool{}
-	var scopes []dataplane.Scope
-	for _, entry := range strings.Split(config, ",") {
-		parts := strings.SplitN(strings.TrimSpace(entry), ":", 4)
-		if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
-			return nil, nil, errors.New("invalid BARQ_API_KEYS entry; expected key:tenant:database:action|action")
-		}
-		key := auth.ServiceKey{Tenant: parts[1], Database: parts[2], Actions: strings.Split(parts[3], "|"), Enabled: true}
-		store.Add(parts[0], key)
-		scope := dataplane.Scope{Tenant: parts[1], Database: parts[2]}
-		if scope.Tenant != "*" && scope.Database != "*" && !seenScopes[scope] {
-			seenScopes[scope] = true
-			scopes = append(scopes, scope)
-		}
-	}
-	return store, scopes, nil
+	return manager, nil
 }
 
-func runDispatcher(ctx context.Context, logger *slog.Logger, dispatcher *webhooks.Dispatcher, scopes []dataplane.Scope) {
+func runDispatcher(ctx context.Context, logger *slog.Logger, dispatcher *webhooks.Dispatcher, manager *auth.Manager) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	scopeTicker := time.NewTicker(5 * time.Second)
+	defer scopeTicker.Stop()
+	var scopes []dataplane.Scope
+	refreshScopes := func() {
+		updated, err := manager.Scopes(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Warn("tenant scope refresh failed", "error", err)
+			}
+			return
+		}
+		scopes = updated
+	}
+	refreshScopes()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-scopeTicker.C:
+			refreshScopes()
 		case <-ticker.C:
 			for _, scope := range scopes {
 				if _, err := dispatcher.PollOnce(ctx, scope); err != nil && ctx.Err() == nil {

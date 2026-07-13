@@ -19,10 +19,10 @@ import (
 type Server struct {
 	data  dataplane.DataPlane
 	hooks *webhooks.Service
-	keys  auth.KeyStore
+	keys  *auth.Manager
 }
 
-func New(data dataplane.DataPlane, hooks *webhooks.Service, keys auth.KeyStore) *Server {
+func New(data dataplane.DataPlane, hooks *webhooks.Service, keys *auth.Manager) *Server {
 	return &Server{data: data, hooks: hooks, keys: keys}
 }
 
@@ -49,9 +49,223 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("/v1/tenants/", s.dataRoutes)
 	protected.HandleFunc("/v1/webhooks", s.webhookCollection)
 	protected.HandleFunc("/v1/webhooks/", s.webhookMember)
+	protected.HandleFunc("/v1/admin/tenants", s.tenantCollection)
+	protected.HandleFunc("/v1/admin/tenants/", s.tenantMember)
+	protected.HandleFunc("/v1/admin/api-keys", s.apiKeyCollection)
+	protected.HandleFunc("/v1/admin/api-keys/", s.apiKeyMember)
 	protected.HandleFunc("GET /v1/operations/health", s.operationsHealth)
 	mux.Handle("/v1/", auth.Middleware(s.keys, protected))
 	return requestIDMiddleware(mux)
+}
+
+func (s *Server) tenantCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if err := auth.AuthorizeAction(r.Context(), "tenants:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		tenants, err := s.keys.ListTenants(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		if principal.Tenant != "*" {
+			visible := tenants[:0]
+			for _, tenant := range tenants {
+				if tenant.ID == principal.Tenant {
+					visible = append(visible, tenant)
+				}
+			}
+			tenants = visible
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
+	case http.MethodPost:
+		if err := auth.AuthorizeGlobal(r.Context(), "tenants:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		var input auth.CreateTenantInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, err)
+			return
+		}
+		tenant, err := s.keys.CreateTenant(r.Context(), input)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, tenant)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"code": "method_not_allowed", "message": "method not allowed"})
+	}
+}
+
+func (s *Server) tenantMember(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/admin/tenants/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+		return
+	}
+	tenant, err := s.keys.GetTenant(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if err := auth.Authorize(r.Context(), dataplane.Scope{Tenant: tenant.ID, Database: "*"}, "tenants:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, tenant)
+	case http.MethodPatch:
+		if err := auth.AuthorizeGlobal(r.Context(), "tenants:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		var input auth.UpdateTenantInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, err)
+			return
+		}
+		updated, err := s.keys.UpdateTenant(r.Context(), id, input)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if err := auth.AuthorizeGlobal(r.Context(), "tenants:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := s.keys.DisableTenant(r.Context(), id); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "GET, PATCH, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"code": "method_not_allowed", "message": "method not allowed"})
+	}
+}
+
+func (s *Server) apiKeyCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if err := auth.AuthorizeAction(r.Context(), "keys:admin"); err != nil {
+			writeError(w, err)
+			return
+		}
+		keys, err := s.keys.ListKeys(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		views := make([]auth.ServiceKeyView, 0, len(keys))
+		for _, key := range keys {
+			if canManageKey(r.Context(), key) {
+				views = append(views, auth.PublicKey(key))
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"api_keys": views})
+	case http.MethodPost:
+		var input auth.CreateServiceKeyInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := authorizeKeyScope(r.Context(), input.Tenant, input.Database); err != nil {
+			writeError(w, err)
+			return
+		}
+		created, err := s.keys.CreateKey(r.Context(), input)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeOneTimeSecret(w, http.StatusCreated, created)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"code": "method_not_allowed", "message": "method not allowed"})
+	}
+}
+
+func (s *Server) apiKeyMember(w http.ResponseWriter, r *http.Request) {
+	member := strings.TrimPrefix(r.URL.Path, "/v1/admin/api-keys/")
+	parts := strings.SplitN(member, ":", 2)
+	id, action := parts[0], ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+		return
+	}
+	key, err := s.keys.GetKey(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !canManageKey(r.Context(), key) {
+		writeError(w, &dataplane.Error{Code: dataplane.CodeForbidden, Message: "API key cannot manage this key scope"})
+		return
+	}
+	if action != "" {
+		if action != "rotate" || r.Method != http.MethodPost {
+			writeError(w, &dataplane.Error{Code: dataplane.CodeNotFound, Message: "route not found"})
+			return
+		}
+		created, err := s.keys.RotateKey(r.Context(), id)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeOneTimeSecret(w, http.StatusCreated, created)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, auth.PublicKey(key))
+	case http.MethodPatch:
+		var input auth.UpdateServiceKeyInput
+		if err := decodeJSON(r, &input); err != nil {
+			writeError(w, err)
+			return
+		}
+		updated, err := s.keys.UpdateKey(r.Context(), id, input)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if err := s.keys.RevokeKey(r.Context(), id); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "GET, PATCH, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"code": "method_not_allowed", "message": "method not allowed"})
+	}
+}
+
+func authorizeKeyScope(ctx context.Context, tenant, database string) error {
+	if tenant == "*" || database == "*" {
+		principal, ok := auth.PrincipalFromContext(ctx)
+		if !ok || (tenant == "*" && (principal.Tenant != "*" || principal.Database != "*")) || (tenant != "*" && principal.Tenant != "*" && (principal.Tenant != tenant || principal.Database != "*")) {
+			return &dataplane.Error{Code: dataplane.CodeForbidden, Message: "API key cannot create this key scope"}
+		}
+	}
+	return auth.Authorize(ctx, dataplane.Scope{Tenant: tenant, Database: database}, "keys:admin")
+}
+
+func canManageKey(ctx context.Context, key auth.ServiceKey) bool {
+	return authorizeKeyScope(ctx, key.Tenant, key.Database) == nil
 }
 
 func (s *Server) operationsHealth(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +497,7 @@ func (s *Server) webhookCollection(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, registered)
+		writeOneTimeSecret(w, http.StatusCreated, registered)
 	case http.MethodGet:
 		hooks, err := s.hooks.List(r.Context(), nil)
 		if err != nil {
@@ -374,7 +588,7 @@ func (s *Server) webhookAction(w http.ResponseWriter, r *http.Request, hook webh
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"secret": secret})
+		writeOneTimeSecret(w, http.StatusOK, map[string]string{"secret": secret})
 	case "replay":
 		count, err := s.hooks.Replay(r.Context(), hook.ID)
 		if err != nil {
@@ -404,6 +618,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeOneTimeSecret(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	writeJSON(w, status, value)
 }
 
 func writeError(w http.ResponseWriter, err error) {

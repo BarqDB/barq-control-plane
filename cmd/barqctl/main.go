@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -39,6 +40,8 @@ func run(args []string) error {
 		return logsCommand(args[1:])
 	case "doctor":
 		return doctorCommand(args[1:])
+	case "access":
+		return accessCommand(args[1:])
 	case "backup":
 		return backupCommand(args[1:])
 	case "restore":
@@ -56,6 +59,42 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func accessCommand(args []string) error {
+	if len(args) == 0 || args[0] != "set" {
+		return errors.New("use barqctl access set")
+	}
+	set := flag.NewFlagSet("access set", flag.ContinueOnError)
+	set.SetOutput(os.Stderr)
+	dir := set.String("dir", "", "deployment directory")
+	keyFile := set.String("key-file", "", "read the new operator API key from a private file")
+	if err := set.Parse(args[1:]); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("access set does not take a key argument; paste it on stdin or use --key-file")
+	}
+	var raw string
+	if *keyFile != "" {
+		data, err := os.ReadFile(*keyFile)
+		if err != nil {
+			return err
+		}
+		raw = string(data)
+	} else {
+		fmt.Fprint(os.Stderr, "Paste the new one-time API key, then press Enter: ")
+		line, err := bufio.NewReader(io.LimitReader(os.Stdin, 4097)).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		raw = line
+	}
+	if err := deployment.SetAPIKey(*dir, raw); err != nil {
+		return err
+	}
+	fmt.Println("Local operator key updated. Run barqctl doctor to check it.")
+	return nil
 }
 
 func logsCommand(args []string) error {
@@ -309,7 +348,7 @@ func initCommand(args []string) error {
 		return err
 	}
 	fmt.Printf("Barq deployment created in %s\n", result.Dir)
-	fmt.Printf("Control API key: %s\n", result.APIKey)
+	fmt.Printf("Global control admin API key: %s\n", result.APIKey)
 	fmt.Println("Save this key now. It is also stored in the private .env file.")
 	fmt.Println("Next: barqctl up")
 	return nil
@@ -370,6 +409,7 @@ Usage:
   barqctl status
   barqctl open
   barqctl doctor
+  barqctl access set
   barqctl backup
   barqctl backup --remote
   barqctl backup configure --repository s3:https://s3.example.com/bucket/barq
@@ -382,6 +422,7 @@ Commands:
   open      Open the control plane
   logs      Show service logs
   doctor    Check configuration, health, disk, and backups
+  access    Update the local operator API key after rotation
   backup    Create, upload, and check encrypted backups
   restore   Restore a verified backup after making a safety backup
   upgrade   Back up and switch to a fixed-digest release

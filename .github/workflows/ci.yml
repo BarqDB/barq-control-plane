@@ -51,6 +51,10 @@ jobs:
       - name: Build BarqDB client library
         run: make -C client/barq-go native
 
+      - name: Check embedded control UI
+        working-directory: server
+        run: node --check internal/console/web/app.js
+
       - name: Test
         working-directory: server
         run: go test -race ./...
@@ -76,9 +80,17 @@ jobs:
           retention-days: 7
 
   docker:
-    name: Docker build
-    runs-on: ubuntu-24.04
+    name: Control Docker build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out control plane
         uses: actions/checkout@v7
@@ -103,18 +115,31 @@ jobs:
           file: server/Dockerfile
           push: false
           load: true
-          tags: barq-control-plane:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: barq-control-plane:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=control-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=control-${{ matrix.arch }}
 
       - name: Smoke test migration preflight
-        run: docker run --rm barq-control-plane:ci migrate --check --from 1 --to 1
+        run: docker run --rm barq-control-plane:ci-${{ matrix.arch }} migrate --check --from 1 --to 1
 
   core-image:
-    name: Core Docker build and smoke test
-    runs-on: ubuntu-24.04
+    name: Core Docker build and smoke test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
+      - name: Check out control plane
+        uses: actions/checkout@v7
+        with:
+          path: server
+
       - name: Check out Core
         uses: actions/checkout@v7
         with:
@@ -130,19 +155,19 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: core
-          file: core/Dockerfile.server
+          file: server/Dockerfile.core
           load: true
           push: false
-          tags: barq-core:ci
-          cache-from: type=gha,scope=core
-          cache-to: type=gha,mode=max,scope=core
+          tags: barq-core:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=core-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=core-${{ matrix.arch }}
 
       - name: Smoke test Core image
         run: |
           docker run -d --name barq-core-ci \
             -e BARQ_INTERNAL_SECRET=ci-secret \
             -p 127.0.0.1:19090:9090 \
-            barq-core:ci \
+            barq-core:ci-${{ matrix.arch }} \
             --root-dir /var/lib/barq \
             --allow-unsigned-tokens \
             --host 0.0.0.0 \

@@ -4,8 +4,14 @@ FROM golang:1.26.5-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends cmake g++ libssl-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 COPY client/barq-go ./client/barq-go
+RUN cmake -S client/barq-go/external/core -B client/barq-go/external/core/build-go \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBARQ_BUILD_LIB_ONLY=ON \
+      -DBARQ_ENABLE_SYNC=ON \
+      -DBARQ_USE_SYSTEM_OPENSSL=ON \
+      -DBARQ_USE_SYSTEM_OPENSSL_PATHS=ON \
+    && cmake --build client/barq-go/external/core/build-go --target BarqFFIStatic -j 4
 COPY server ./server
-RUN make -C client/barq-go native
 WORKDIR /workspace/server
 RUN go mod download && CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/barq-server ./cmd/barq-server
 
