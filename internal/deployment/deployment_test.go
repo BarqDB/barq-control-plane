@@ -29,6 +29,7 @@ func TestInitCreatesPrivateRunnableBundle(t *testing.T) {
 
 	environment := readTestFile(t, filepath.Join(dir, ".env"))
 	for _, expected := range []string{
+		"BARQ_PROJECT=barq-db-",
 		"BARQ_DOMAIN=db.example.com",
 		"BARQ_CONTROL_IMAGE=ghcr.io/barqdb/barq-control-plane@sha256:" + digestA,
 		"BARQ_CORE_IMAGE=ghcr.io/barqdb/barq-core@sha256:" + digestB,
@@ -64,7 +65,7 @@ func TestInitCreatesPrivateRunnableBundle(t *testing.T) {
 	if err := json.Unmarshal([]byte(manifestData), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Domain != "db.example.com" || !manifest.CreatedAt.Equal(now) {
+	if manifest.Domain != "db.example.com" || manifest.Project == "" || manifest.Release.Version != "v1.2.3" || !manifest.CreatedAt.Equal(now) {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 	compose := readTestFile(t, filepath.Join(dir, "compose.yaml"))

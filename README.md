@@ -46,6 +46,30 @@ barqctl status
 barqctl open
 ```
 
+Day-to-day maintenance also stays behind `barqctl`:
+
+```sh
+barqctl doctor
+barqctl logs --tail 200
+barqctl backup
+barqctl upgrade --release v1.2.0
+barqctl rollback
+```
+
+`backup`, `upgrade`, and `rollback` briefly stop Barq so the database files are
+copied as one consistent snapshot. Every upgrade and rollback first makes a
+local safety backup. If the new containers do not become healthy, `barqctl`
+puts the old image digests back automatically.
+
+Backups are stored under `~/.barq/backups` by default. They contain the Barq
+data volume, deployment settings, keys, SHA-256 checksums, and release history.
+Restore checks every file before replacing data and makes one more safety
+backup first:
+
+```sh
+barqctl restore --backup ~/.barq/backups/20260713T010203Z --yes
+```
+
 The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
 `--dir` to use another location. `init` creates:
 
@@ -57,6 +81,8 @@ The default deployment directory is `~/.barq`. Set `BARQ_HOME` or pass
 
 Only ports 80 and 443 are published. The Core internal API is not exposed.
 The generated `.env` and JWT private key use file mode `0600`.
+Each domain gets its own stable Compose project and volume names. This lets one
+machine run separate client stacks without their data or networks colliding.
 
 For source builds without a published release, provide both images explicitly:
 

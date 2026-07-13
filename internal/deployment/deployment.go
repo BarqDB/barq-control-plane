@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -15,7 +16,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -29,7 +29,10 @@ const manifestName = "deployment.json"
 type Manifest struct {
 	Version   string    `json:"version"`
 	Domain    string    `json:"domain"`
+	Project   string    `json:"project"`
 	URL       string    `json:"url"`
+	Release   Release   `json:"release"`
+	Previous  []Release `json:"previous,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -121,14 +124,15 @@ func Init(options InitOptions) (InitResult, error) {
 	if options.Now != nil {
 		now = options.Now
 	}
-	manifest := Manifest{Version: version, Domain: domain, URL: "https://" + domain, CreatedAt: now().UTC()}
+	release := Release{Version: version, ControlImage: options.ControlImage, CoreImage: options.CoreImage}
+	manifest := Manifest{Version: version, Domain: domain, Project: projectName(domain), URL: "https://" + domain, Release: release, CreatedAt: now().UTC()}
 	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return InitResult{}, err
 	}
 	manifestJSON = append(manifestJSON, '\n')
-	environment := fmt.Sprintf("BARQ_DOMAIN=%s\nBARQ_CONTROL_IMAGE=%s\nBARQ_CORE_IMAGE=%s\nBARQ_INTERNAL_SECRET=%s\nBARQ_API_KEY=%s\nBARQ_TENANT=default\nBARQ_DATABASE=default\nBARQ_LOG_LEVEL=info\nBARQ_ALLOW_PRIVATE_WEBHOOKS=false\n",
-		domain, options.ControlImage, options.CoreImage, internalSecret, apiKey)
+	environment := fmt.Sprintf("BARQ_PROJECT=%s\nBARQ_DOMAIN=%s\nBARQ_CONTROL_IMAGE=%s\nBARQ_CORE_IMAGE=%s\nBARQ_INTERNAL_SECRET=%s\nBARQ_API_KEY=%s\nBARQ_TENANT=default\nBARQ_DATABASE=default\nBARQ_LOG_LEVEL=info\nBARQ_ALLOW_PRIVATE_WEBHOOKS=false\n",
+		manifest.Project, domain, options.ControlImage, options.CoreImage, internalSecret, apiKey)
 
 	files := []struct {
 		name string
@@ -179,20 +183,7 @@ func Compose(ctx context.Context, dir string, stdout, stderr io.Writer, args ...
 	if _, err := LoadManifest(dir); err != nil {
 		return err
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		return errors.New("Docker is required; install Docker Engine or Docker Desktop first")
-	}
-	commandArgs := []string{"compose", "--env-file", ".env", "-f", "compose.yaml"}
-	commandArgs = append(commandArgs, args...)
-	command := exec.CommandContext(ctx, "docker", commandArgs...)
-	command.Dir = dir
-	command.Stdout = stdout
-	command.Stderr = stderr
-	command.Stdin = os.Stdin
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("docker compose: %w", err)
-	}
-	return nil
+	return runCompose(ctx, ExecRunner{}, dir, processInput(), stdout, stderr, args...)
 }
 
 func LoadManifest(dir string) (Manifest, error) {
@@ -219,16 +210,17 @@ func Open(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var command *exec.Cmd
+	var name string
+	var args []string
 	switch runtime.GOOS {
 	case "darwin":
-		command = exec.Command("open", manifest.URL)
+		name, args = "open", []string{manifest.URL}
 	case "windows":
-		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", manifest.URL)
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", manifest.URL}
 	default:
-		command = exec.Command("xdg-open", manifest.URL)
+		name, args = "xdg-open", []string{manifest.URL}
 	}
-	if err := command.Run(); err != nil {
+	if err := (ExecRunner{}).Run(context.Background(), dir, nil, io.Discard, io.Discard, name, args...); err != nil {
 		return manifest.URL, fmt.Errorf("open browser: %w", err)
 	}
 	return manifest.URL, nil
@@ -315,6 +307,19 @@ func fixedImage(image string) bool {
 		}
 	}
 	return true
+}
+
+func projectName(domain string) string {
+	label := strings.Split(domain, ".")[0]
+	label = strings.Trim(label, "-")
+	if len(label) > 24 {
+		label = label[:24]
+	}
+	if label == "" {
+		label = "server"
+	}
+	digest := sha256.Sum256([]byte(domain))
+	return fmt.Sprintf("barq-%s-%x", label, digest[:4])
 }
 
 func jwtKeyPair() ([]byte, []byte, error) {
