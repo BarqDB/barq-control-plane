@@ -21,6 +21,7 @@
       <span id="system-version">CORE —</span>
     </div>
     <nav>
+      <a href="#data-plane-status">SYSTEM</a>
       <a href="#sync-rules-workspace">SYNC RULES</a>
       <a href="#access-workspace" id="access-nav" hidden>ACCESS</a>
       <a href="/docs/" target="_blank" rel="noreferrer">API DOCS ↗</a>
@@ -42,6 +43,32 @@
       <article><span>ACTIVE</span><strong id="metric-active">—</strong><small>currently armed</small></article>
       <article><span>DATA PLANE</span><strong class="word" id="metric-plane">—</strong><small id="metric-capabilities">waiting</small></article>
       <article class="accent"><span>LOCAL STORE</span><strong class="word">BARQ</strong><small>versioned records</small></article>
+    </section>
+
+    <section class="data-plane-status reveal delay-2" id="data-plane-status" aria-labelledby="data-plane-title">
+      <div class="data-plane-main">
+        <div class="data-plane-heading">
+          <div>
+            <p class="eyebrow">SYSTEM STATUS</p>
+            <h2 id="data-plane-title">Data plane</h2>
+          </div>
+          <span class="status-badge checking" id="data-plane-badge">CHECKING</span>
+        </div>
+        <p class="data-plane-summary" id="data-plane-summary">Checking whether Core can accept requests.</p>
+        <dl class="data-plane-facts">
+          <div><dt>Core version</dt><dd id="data-plane-version">—</dd></div>
+          <div><dt>Last check</dt><dd id="data-plane-checked">—</dd></div>
+          <div><dt>FLX rules</dt><dd id="data-plane-flx">—</dd></div>
+        </dl>
+        <button class="button" id="refresh-health" type="button">CHECK AGAIN</button>
+      </div>
+      <aside class="data-plane-help">
+        <p class="eyebrow">RUN ON THE BARQ SERVER</p>
+        <p>Check every container and the public API:</p>
+        <code>barqctl doctor</code>
+        <p>Follow only the data-plane logs:</p>
+        <div class="command-row"><code id="core-log-command">barqctl logs --tail 200 --follow core</code><button class="text-button" id="copy-log-command" type="button">COPY</button></div>
+      </aside>
     </section>
 
     <section class="workspace reveal delay-2">

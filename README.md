@@ -66,7 +66,8 @@ Day-to-day maintenance also stays behind `barqctl`:
 
 ```sh
 barqctl doctor                 # containers, disk, backups, queues, dead letters
-barqctl logs --tail 200
+barqctl logs --tail 200                # all services
+barqctl logs --tail 200 --follow core  # data-plane only
 barqctl access set             # paste a new admin key after rotating it
 barqctl backup
 barqctl upgrade --release v1.2.0

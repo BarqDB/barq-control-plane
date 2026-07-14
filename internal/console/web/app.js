@@ -4,12 +4,18 @@ const state = {
   tenants: [],
   apiKeys: [],
   health: null,
+  healthError: null,
+  healthCheckedAt: null,
   selected: null,
   ruleSchema: null,
   rules: [],
   ruleRevision: 0,
   ruleHash: "",
   ruleHistory: [],
+  ruleScope: null,
+  ruleLoadedSignature: "",
+  rulePlannedSignature: "",
+  rulePlannedChanges: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -44,6 +50,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(body?.message || `${response.status} ${response.statusText}`);
     error.status = response.status;
+    error.code = body?.code || "";
     throw error;
   }
   return body;
@@ -54,18 +61,45 @@ function splitList(value) {
 }
 
 async function load() {
-  try {
-    state.health = await api("/health/ready");
-    renderHealth(true);
-  } catch (error) {
-    renderHealth(false);
-    toast(`Data plane: ${error.message}`, true);
-  }
+  await checkDataPlane(false);
   if (!state.apiKey) {
     credentialsDialog.showModal();
     return;
   }
   await Promise.all([loadHooks(), loadAccess()]);
+}
+
+function usefulError(error, context = "Request") {
+  if (error.code === "unavailable" || error.status === 503) {
+    return "Core is not ready. Run barqctl doctor, then check the Core logs below.";
+  }
+  if (error.code === "internal" || error.status >= 500) {
+    return `${context} failed inside Core. Check the Core logs below.`;
+  }
+  if (error.code === "conflict") {
+    return `${error.message}. Reload this database before trying again.`;
+  }
+  return error.message;
+}
+
+async function checkDataPlane(showToast = true) {
+  const button = $("#refresh-health");
+  if (button) button.disabled = true;
+  try {
+    state.health = await api("/health/ready");
+    state.healthError = null;
+    state.healthCheckedAt = new Date();
+    renderHealth(true);
+    if (showToast) toast("Core is ready");
+  } catch (error) {
+    state.health = null;
+    state.healthError = error;
+    state.healthCheckedAt = new Date();
+    renderHealth(false);
+    if (showToast) toast(usefulError(error, "Health check"), true);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function loadHooks() {
@@ -119,19 +153,58 @@ async function loadAccess() {
   }
 }
 
-function ruleBasePath() {
+function readRuleScope() {
   const tenant = $("#rules-tenant").value.trim();
   const database = $("#rules-database").value.trim();
   if (!tenant || !database) throw new Error("Tenant and database are required");
-  return `/v1/tenants/${encodeURIComponent(tenant)}/databases/${encodeURIComponent(database)}`;
+  return {tenant, database};
 }
 
-async function loadRuleWorkspace() {
+function ruleBasePath(scope = readRuleScope()) {
+  return `/v1/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`;
+}
+
+function sameRuleScope() {
+  if (!state.ruleScope) return false;
+  try {
+    const scope = readRuleScope();
+    return scope.tenant === state.ruleScope.tenant && scope.database === state.ruleScope.database;
+  } catch {
+    return false;
+  }
+}
+
+function ruleSignature() {
+  return JSON.stringify([...state.rules]
+    .map((rule) => ({object_type: rule.object_type, read: rule.read, write: rule.write}))
+    .sort((left, right) => left.object_type.localeCompare(right.object_type)));
+}
+
+function updateRuleActions() {
+  const loaded = Boolean(state.ruleScope) && sameRuleScope();
+  const signature = ruleSignature();
+  const changed = loaded && signature !== state.ruleLoadedSignature;
+  const planned = changed && signature === state.rulePlannedSignature;
+  $("#add-rule").disabled = !loaded;
+  $("#plan-rules").disabled = !changed;
+  $("#apply-rules").disabled = !planned;
+  $("#test-rules").disabled = !loaded;
+  $("#sync-rules-workspace").classList.toggle("scope-stale", Boolean(state.ruleScope) && !loaded);
+}
+
+async function loadRuleWorkspace(scopeOverride = null) {
   const button = $("#load-rules");
+  const tenantInput = $("#rules-tenant");
+  const databaseInput = $("#rules-database");
   button.disabled = true;
+  tenantInput.disabled = true;
+  databaseInput.disabled = true;
   button.textContent = "LOADING…";
   try {
-    const base = ruleBasePath();
+    const scope = scopeOverride || readRuleScope();
+    tenantInput.value = scope.tenant;
+    databaseInput.value = scope.database;
+    const base = ruleBasePath(scope);
     const [schema, current, history] = await Promise.all([
       api(`${base}/schema`),
       api(`${base}/sync-rules`),
@@ -142,12 +215,19 @@ async function loadRuleWorkspace() {
     state.ruleRevision = current.revision;
     state.ruleHash = current.hash || "";
     state.ruleHistory = history.revisions || [];
+    state.ruleScope = scope;
+    state.ruleLoadedSignature = ruleSignature();
+    state.rulePlannedSignature = "";
+    state.rulePlannedChanges = [];
     renderRuleWorkspace();
-    toast("Sync rules loaded");
+    toast(`Sync rules loaded for ${scope.tenant}/${scope.database}`);
   } catch (error) {
-    toast(`Sync rules: ${error.message}`, true);
-    setRulePlan(error.message, false);
+    const message = usefulError(error, "Loading sync rules");
+    toast(message, true);
+    setRulePlan(message, false);
   } finally {
+    tenantInput.disabled = false;
+    databaseInput.disabled = false;
     button.disabled = false;
     button.textContent = "LOAD DATABASE";
   }
@@ -157,13 +237,11 @@ function renderRuleWorkspace() {
   $("#rules-revision").textContent = `REV ${state.ruleRevision}`;
   $("#rules-hash").textContent = state.ruleHash || "CLI fallback";
   $("#rules-schema-version").textContent = `SCHEMA ${state.ruleSchema?.version ?? "—"}`;
-  $("#plan-rules").disabled = false;
-  $("#apply-rules").disabled = false;
-  $("#test-rules").disabled = false;
   renderObjectPickers();
   renderRuleList();
   renderRuleHistory();
-  setRulePlan("Draft loaded. Plan checks every query without changing live devices.");
+  setRulePlan(`Loaded ${state.ruleScope.tenant}/${state.ruleScope.database}. Change a rule, then run plan.`);
+  updateRuleActions();
 }
 
 function renderObjectPickers() {
@@ -240,7 +318,7 @@ function ruleCard(rule, index) {
   const ownerLabel = document.createElement("label");
   ownerLabel.textContent = "Owner field";
   const ownerSelect = document.createElement("select");
-  simpleFields(rule.object_type).forEach((field) => {
+  ownerFields(rule.object_type).forEach((field) => {
     const option = document.createElement("option");
     option.value = field.name;
     option.textContent = `${field.name} · ${field.type}`;
@@ -302,6 +380,11 @@ function simpleFields(objectType) {
   return (object?.properties || []).filter((field) => !field.target || field.embedded);
 }
 
+function ownerFields(objectType) {
+  return simpleFields(objectType).filter((field) =>
+    field.type === "string" && !field.target && (!field.collection || field.collection === "none"));
+}
+
 function rulePreset(rule) {
   if (rule.read === "FALSEPREDICATE" && rule.write === "FALSEPREDICATE") return "deny";
   if (rule.read === "TRUEPREDICATE" && rule.write === "TRUEPREDICATE") return "public";
@@ -319,7 +402,7 @@ function setRulePreset(index, preset) {
   if (preset === "deny") rule.read = rule.write = "FALSEPREDICATE";
   if (preset === "public") rule.read = rule.write = "TRUEPREDICATE";
   if (preset === "owner") {
-    const fields = simpleFields(rule.object_type);
+    const fields = ownerFields(rule.object_type);
     const preferred = fields.find((field) => field.name === "owner_id") || fields.find((field) => !field.primary_key) || fields[0];
     rule.read = rule.write = preferred ? `${preferred.name} == $user.id` : "FALSEPREDICATE";
   }
@@ -328,7 +411,11 @@ function setRulePreset(index, preset) {
 }
 
 function markRulesChanged() {
-  setRulePlan("Draft changed. Run plan before apply.");
+  state.rulePlannedSignature = "";
+  state.rulePlannedChanges = [];
+  const changed = sameRuleScope() && ruleSignature() !== state.ruleLoadedSignature;
+  setRulePlan(changed ? "Draft changed. Run plan before apply." : "No changes to apply.");
+  updateRuleActions();
 }
 
 function setRulePlan(message, good = null) {
@@ -339,36 +426,74 @@ function setRulePlan(message, good = null) {
 }
 
 async function planRules() {
+  if (!sameRuleScope()) {
+    setRulePlan("The tenant or database changed. Load it before planning.", false);
+    updateRuleActions();
+    return;
+  }
+  const signature = ruleSignature();
+  const button = $("#plan-rules");
+  button.disabled = true;
   try {
-    const result = await api(`${ruleBasePath()}/sync-rules:plan`, {
+    const result = await api(`${ruleBasePath(state.ruleScope)}/sync-rules:plan`, {
       method: "POST",
       body: JSON.stringify({expected_revision: state.ruleRevision, rules: state.rules}),
     });
-    const changes = result.changes?.join(" · ") || `revision ${result.target_revision} is valid`;
-    setRulePlan(changes, true);
-    toast("Rule plan passed");
+    if (signature !== ruleSignature()) {
+      setRulePlan("Draft changed while planning. Run plan again.");
+      return;
+    }
+    const changes = result.changes || [];
+    if (!changes.length || result.hash === state.ruleHash) {
+      state.rulePlannedSignature = "";
+      state.rulePlannedChanges = [];
+      setRulePlan("No live changes. Apply is not needed.", true);
+      toast("No rule changes found");
+      return;
+    }
+    state.rulePlannedSignature = signature;
+    state.rulePlannedChanges = changes;
+    setRulePlan(changes.join(" · "), true);
+    toast("Rule plan passed. Apply is now available.");
   } catch (error) {
-    setRulePlan(error.message, false);
-    toast(error.message, true);
+    state.rulePlannedSignature = "";
+    state.rulePlannedChanges = [];
+    const message = usefulError(error, "Rule plan");
+    setRulePlan(message, false);
+    toast(message, true);
+  } finally {
+    updateRuleActions();
   }
 }
 
 async function applyRules() {
-  if (!confirm(`Apply revision ${state.ruleRevision + 1} now? Connected devices will be filtered without reconnecting.`)) return;
+  if (!sameRuleScope() || ruleSignature() !== state.rulePlannedSignature) {
+    setRulePlan("Run plan for this exact draft before applying.", false);
+    updateRuleActions();
+    return;
+  }
+  const scopeLabel = `${state.ruleScope.tenant}/${state.ruleScope.database}`;
+  const changes = state.rulePlannedChanges.join("\n• ");
+  if (!confirm(`Apply revision ${state.ruleRevision + 1} to ${scopeLabel}?\n\n• ${changes}\n\nConnected devices will be filtered without reconnecting.`)) return;
   try {
-    await api(`${ruleBasePath()}/sync-rules`, {
+    await api(`${ruleBasePath(state.ruleScope)}/sync-rules`, {
       method: "PUT",
       body: JSON.stringify({expected_revision: state.ruleRevision, rules: state.rules}),
     });
-    await loadRuleWorkspace();
-    toast("Sync rules are live");
+    await loadRuleWorkspace(state.ruleScope);
+    toast(`Sync rules are live on ${scopeLabel}`);
   } catch (error) {
-    setRulePlan(error.message, false);
-    toast(error.message, true);
+    const message = usefulError(error, "Applying sync rules");
+    setRulePlan(message, false);
+    toast(message, true);
   }
 }
 
 async function testRules() {
+  if (!sameRuleScope()) {
+    toast("The tenant or database changed. Load it before testing.", true);
+    return;
+  }
   const rawKey = $("#rule-test-key").value.trim();
   if (!$("#rule-test-user").value.trim() || !$("#rule-test-object").value || !rawKey) {
     toast("User, object, and primary key are required", true);
@@ -378,7 +503,7 @@ async function testRules() {
   try { primaryKey = JSON.parse(rawKey); } catch { /* plain text key */ }
   const output = $("#rule-test-result");
   try {
-    const result = await api(`${ruleBasePath()}/sync-rules:test`, {
+    const result = await api(`${ruleBasePath(state.ruleScope)}/sync-rules:test`, {
       method: "POST",
       body: JSON.stringify({
         user_id: $("#rule-test-user").value.trim(),
@@ -387,11 +512,14 @@ async function testRules() {
         rules: state.rules,
       }),
     });
-    output.textContent = result.found ? `READ ${result.can_read ? "ALLOW" : "DENY"} · WRITE ${result.can_write ? "ALLOW" : "DENY"}` : "OBJECT NOT FOUND";
+    const scope = state.ruleScope;
+    output.textContent = result.found
+      ? `READ ${result.can_read ? "ALLOW" : "DENY"} · WRITE ${result.can_write ? "ALLOW" : "DENY"}`
+      : `No ${$("#rule-test-object").value} row with primary key ${rawKey} in ${scope.tenant}/${scope.database}.`;
     output.classList.toggle("good", result.found && result.can_read && result.can_write);
     output.classList.toggle("bad", !result.found || !result.can_read || !result.can_write);
   } catch (error) {
-    output.textContent = error.message;
+    output.textContent = usefulError(error, "Rule test");
     output.classList.remove("good");
     output.classList.add("bad");
   }
@@ -413,8 +541,21 @@ function renderRuleHistory() {
     title.textContent = `REV ${revision.revision}${revision.revision === state.ruleRevision ? " · ACTIVE" : ""}`;
     const meta = document.createElement("p");
     const time = revision.created_at ? new Date(revision.created_at).toLocaleString() : "unknown time";
-    meta.textContent = `${revision.rules?.length || 0} rules · ${revision.source || "apply"} · ${time}`;
-    body.append(title, meta);
+    const actor = revision.actor || "unknown actor";
+    const restored = revision.restored_from ? ` · restored from rev ${revision.restored_from}` : "";
+    meta.textContent = `${revision.rules?.length || 0} rules · ${revision.source || "apply"}${restored} · ${actor} · ${time}`;
+    const details = document.createElement("details");
+    details.className = "history-details";
+    const summary = document.createElement("summary");
+    summary.textContent = revision.revision === state.ruleRevision ? "VIEW ACTIVE RULES" : "VIEW RULES";
+    const hash = document.createElement("small");
+    hash.textContent = revision.hash ? `HASH ${revision.hash}` : "HASH NOT RECORDED";
+    const rules = document.createElement("pre");
+    rules.textContent = (revision.rules || []).length
+      ? revision.rules.map((rule) => `${rule.object_type}\n  read:  ${rule.read}\n  write: ${rule.write}`).join("\n\n")
+      : "No object rules. Device access was denied.";
+    details.append(summary, hash, rules);
+    body.append(title, meta, details);
     row.append(body);
     if (revision.revision !== state.ruleRevision) {
       const button = document.createElement("button");
@@ -428,13 +569,20 @@ function renderRuleHistory() {
 }
 
 async function restoreRules(revision) {
-  if (!confirm(`Restore revision ${revision} as new revision ${state.ruleRevision + 1}?`)) return;
+  if (!sameRuleScope()) {
+    toast("The tenant or database changed. Load it before restoring.", true);
+    return;
+  }
+  const stored = state.ruleHistory.find((item) => item.revision === revision);
+  const scopeLabel = `${state.ruleScope.tenant}/${state.ruleScope.database}`;
+  const actor = stored?.actor ? ` by ${stored.actor}` : "";
+  if (!confirm(`Restore revision ${revision}${actor} to ${scopeLabel} as new revision ${state.ruleRevision + 1}?`)) return;
   try {
-    await api(`${ruleBasePath()}/sync-rules/revisions/${revision}:restore`, {
+    await api(`${ruleBasePath(state.ruleScope)}/sync-rules/revisions/${revision}:restore`, {
       method: "POST",
       body: JSON.stringify({expected_revision: state.ruleRevision}),
     });
-    await loadRuleWorkspace();
+    await loadRuleWorkspace(state.ruleScope);
     toast(`Revision ${revision} restored`);
   } catch (error) { toast(error.message, true); }
 }
@@ -525,6 +673,17 @@ function renderHealth(online) {
   $("#metric-plane").textContent = online ? "READY" : "DOWN";
   const capabilities = state.health?.capabilities || [];
   $("#metric-capabilities").textContent = capabilities.length ? capabilities.join(" / ") : "no capabilities";
+  const badge = $("#data-plane-badge");
+  badge.textContent = online ? "READY" : "DOWN";
+  badge.classList.toggle("ready", online);
+  badge.classList.toggle("down", !online);
+  badge.classList.remove("checking");
+  $("#data-plane-summary").textContent = online
+    ? "Core answered its readiness check and can accept data requests."
+    : usefulError(state.healthError || new Error("Core did not answer"), "Health check");
+  $("#data-plane-version").textContent = online ? state.health.version : "Not available";
+  $("#data-plane-checked").textContent = state.healthCheckedAt ? state.healthCheckedAt.toLocaleTimeString() : "—";
+  $("#data-plane-flx").textContent = capabilities.includes("flx_rules") ? "Enabled" : online ? "Not advertised" : "Unknown";
 }
 
 function renderHooks() {
@@ -862,14 +1021,22 @@ $("#key-form").addEventListener("submit", async (event) => {
   } catch (error) { toast(error.message, true); }
 });
 
-$("#load-rules").addEventListener("click", loadRuleWorkspace);
+$("#load-rules").addEventListener("click", () => loadRuleWorkspace());
+[$("#rules-tenant"), $("#rules-database")].forEach((input) => input.addEventListener("input", () => {
+  state.rulePlannedSignature = "";
+  state.rulePlannedChanges = [];
+  if (state.ruleScope && !sameRuleScope()) {
+    setRulePlan("Scope changed. Load this tenant and database before editing.", false);
+  }
+  updateRuleActions();
+}));
 $("#add-rule").addEventListener("click", () => {
   const objectType = $("#rule-object-picker").value;
   if (!objectType) {
     toast("Select an object first", true);
     return;
   }
-  const fields = simpleFields(objectType);
+  const fields = ownerFields(objectType);
   const owner = fields.find((field) => field.name === "owner_id");
   const predicate = owner ? `${owner.name} == $user.id` : "FALSEPREDICATE";
   state.rules.push({object_type: objectType, read: predicate, write: predicate});
@@ -881,6 +1048,11 @@ $("#add-rule").addEventListener("click", () => {
 $("#plan-rules").addEventListener("click", planRules);
 $("#apply-rules").addEventListener("click", applyRules);
 $("#test-rules").addEventListener("click", testRules);
+$("#refresh-health").addEventListener("click", () => checkDataPlane(true));
+$("#copy-log-command").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("#core-log-command").textContent);
+  toast("Core log command copied");
+});
 
 $("#search").addEventListener("input", renderHooks);
 $("#drawer-close").addEventListener("click", closeDrawer);
@@ -899,3 +1071,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 load();
+setInterval(() => {
+  if (document.visibilityState === "visible") checkDataPlane(false);
+}, 15000);
