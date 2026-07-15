@@ -81,6 +81,8 @@ jobs:
 
       - name: Scan image
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
         with:
           image-ref: ${{ env.CONTROL_IMAGE }}@${{ steps.build.outputs.digest }}
           format: table
@@ -200,6 +202,8 @@ jobs:
 
       - name: Scan image
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
         with:
           image-ref: ${{ env.CORE_IMAGE }}@${{ steps.build.outputs.digest }}
           format: table
