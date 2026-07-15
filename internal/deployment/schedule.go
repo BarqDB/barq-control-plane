@@ -10,13 +10,13 @@ import (
 )
 
 type BackupScheduleOptions struct {
-	Dir       string
-	DailyAt   string
-	Runner    Runner
-	Stdout    io.Writer
-	Stderr    io.Writer
-	Binary    string
-	ConfigDir string
+	Dir     string
+	DailyAt string
+	Runner  Runner
+	Stdout  io.Writer
+	Stderr  io.Writer
+	Binary  string
+	UnitDir string
 }
 
 type BackupScheduleResult struct {
@@ -60,26 +60,23 @@ func InstallBackupSchedule(ctx context.Context, options BackupScheduleOptions) (
 	if err != nil {
 		return BackupScheduleResult{}, err
 	}
-	configDir := options.ConfigDir
-	if configDir == "" {
-		configDir, err = os.UserConfigDir()
-		if err != nil {
-			return BackupScheduleResult{}, err
-		}
+	unitDir := options.UnitDir
+	if unitDir == "" {
+		unitDir = defaultUnitDir
 	}
 	return installBackupSchedule(ctx, schedulePlatformOptions{
-		Dir: dir, Project: manifest.Project, DailyAt: parsed, Binary: binary, ConfigDir: configDir,
+		Dir: dir, Project: manifest.Project, DailyAt: parsed, Binary: binary, UnitDir: unitDir,
 		Runner: defaultRunner(options.Runner), Stdout: defaultWriter(options.Stdout), Stderr: defaultWriter(options.Stderr),
 	})
 }
 
 type schedulePlatformOptions struct {
-	Dir       string
-	Project   string
-	DailyAt   time.Time
-	Binary    string
-	ConfigDir string
-	Runner    Runner
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Dir     string
+	Project string
+	DailyAt time.Time
+	Binary  string
+	UnitDir string
+	Runner  Runner
+	Stdout  io.Writer
+	Stderr  io.Writer
 }

@@ -117,8 +117,12 @@ On a Linux server with systemd, one command enables daily encrypted backups and
 a weekly full download-and-restore test:
 
 ```sh
-barqctl backup schedule --daily-at 03:00
+sudo barqctl backup schedule --daily-at 03:00
 ```
+
+This writes system timers to `/etc/systemd/system`, so it needs root. System
+timers keep running after logout and start again after a reboot; the units run
+as the account that owns the deployment directory.
 
 Remote retention keeps 7 daily, 4 weekly, and 12 monthly snapshots. Three
 verified local copies are kept for fast recovery. `barqctl doctor` warns when
