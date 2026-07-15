@@ -115,7 +115,8 @@ func TestApplyStoresImmutableHistoryAndSupportsRetryAndRestore(t *testing.T) {
 		t.Fatalf("restore: %+v, %v", restored, err)
 	}
 	history, err = service.History(t.Context(), scope)
-	if err != nil || len(history) != 2 || history[0].Revision != 2 || history[1].Revision != 1 {
+	if err != nil || len(history) != 2 || history[0].Revision != 2 || history[0].Source != "restore" ||
+		history[0].RestoredFrom == nil || *history[0].RestoredFrom != 1 || history[1].Revision != 1 {
 		t.Fatalf("restored history: %+v, %v", history, err)
 	}
 }

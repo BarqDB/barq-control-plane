@@ -106,9 +106,24 @@ func logsCommand(args []string) error {
 	if err := set.Parse(args); err != nil {
 		return err
 	}
+	if set.NArg() > 1 {
+		return errors.New("logs accepts at most one service: core, control, or edge")
+	}
+	service := ""
+	if set.NArg() == 1 {
+		service = set.Arg(0)
+		switch service {
+		case "core", "control", "edge":
+		default:
+			return fmt.Errorf("unknown service %q; use core, control, or edge", service)
+		}
+	}
 	composeArgs := []string{"logs", "--tail", fmt.Sprint(*tail)}
 	if *follow {
 		composeArgs = append(composeArgs, "--follow")
+	}
+	if service != "" {
+		composeArgs = append(composeArgs, service)
 	}
 	return deployment.Compose(context.Background(), *dir, os.Stdout, os.Stderr, composeArgs...)
 }
@@ -409,6 +424,7 @@ Usage:
   barqctl status
   barqctl open
   barqctl doctor
+  barqctl logs --tail 200 --follow core
   barqctl access set
   barqctl backup
   barqctl backup --remote
@@ -420,7 +436,7 @@ Commands:
   up        Start or update the deployment
   status    Show service health
   open      Open the control plane
-  logs      Show service logs
+  logs      Show logs for all services, or core, control, or edge
   doctor    Check configuration, health, disk, and backups
   access    Update the local operator API key after rotation
   backup    Create, upload, and check encrypted backups

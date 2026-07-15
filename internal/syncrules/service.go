@@ -18,14 +18,15 @@ const (
 )
 
 type Revision struct {
-	Scope     dataplane.Scope     `json:"scope"`
-	Revision  uint64              `json:"revision"`
-	Hash      string              `json:"hash"`
-	Rules     []dataplane.FLXRule `json:"rules"`
-	Actor     string              `json:"actor,omitempty"`
-	RequestID string              `json:"request_id,omitempty"`
-	Source    string              `json:"source,omitempty"`
-	CreatedAt time.Time           `json:"created_at"`
+	Scope        dataplane.Scope     `json:"scope"`
+	Revision     uint64              `json:"revision"`
+	Hash         string              `json:"hash"`
+	Rules        []dataplane.FLXRule `json:"rules"`
+	Actor        string              `json:"actor,omitempty"`
+	RequestID    string              `json:"request_id,omitempty"`
+	Source       string              `json:"source,omitempty"`
+	RestoredFrom *uint64             `json:"restored_from,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
 }
 
 type Head struct {
@@ -40,6 +41,8 @@ type ApplyInput struct {
 	Rules            []dataplane.FLXRule `json:"rules"`
 	RequestID        string              `json:"-"`
 	Actor            string              `json:"-"`
+	Source           string              `json:"-"`
+	RestoredFrom     *uint64             `json:"-"`
 }
 
 type pendingApply struct {
@@ -49,6 +52,8 @@ type pendingApply struct {
 	Rules            []dataplane.FLXRule `json:"rules"`
 	Actor            string              `json:"actor,omitempty"`
 	RequestID        string              `json:"request_id"`
+	Source           string              `json:"source,omitempty"`
+	RestoredFrom     *uint64             `json:"restored_from,omitempty"`
 	CreatedAt        time.Time           `json:"created_at"`
 }
 
@@ -103,7 +108,8 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		revision := Revision{
 			Scope: pending.Scope, Revision: current.Revision, Hash: current.Hash,
 			Rules: append([]dataplane.FLXRule(nil), current.Rules...), Actor: pending.Actor,
-			RequestID: pending.RequestID, Source: "recovered", CreatedAt: pending.CreatedAt,
+			RequestID: pending.RequestID, Source: "recovered", RestoredFrom: pending.RestoredFrom,
+			CreatedAt: pending.CreatedAt,
 		}
 		if err := s.finishApply(ctx, revision, record.Key, record.Version); err != nil {
 			return err
@@ -141,10 +147,15 @@ func (s *Service) Apply(ctx context.Context, scope dataplane.Scope, input ApplyI
 		return dataplane.FLXRulesResult{}, invalid("request ID is required")
 	}
 	target := input.ExpectedRevision + 1
+	source := input.Source
+	if source == "" {
+		source = "apply"
+	}
 	pending := pendingApply{
 		Scope: scope, ExpectedRevision: input.ExpectedRevision, TargetRevision: target,
 		Rules: append([]dataplane.FLXRule(nil), input.Rules...), Actor: input.Actor,
-		RequestID: input.RequestID, CreatedAt: s.now().UTC(),
+		RequestID: input.RequestID, Source: source, RestoredFrom: input.RestoredFrom,
+		CreatedAt: s.now().UTC(),
 	}
 	pendingKey := scopeKey(scope) + "/" + input.RequestID
 	pendingJSON, err := control.Encode(pending)
@@ -182,7 +193,8 @@ func (s *Service) Apply(ctx context.Context, scope dataplane.Scope, input ApplyI
 	revision := Revision{
 		Scope: scope, Revision: result.Revision, Hash: result.Hash,
 		Rules: append([]dataplane.FLXRule(nil), result.Rules...), Actor: input.Actor,
-		RequestID: input.RequestID, Source: "apply", CreatedAt: s.now().UTC(),
+		RequestID: input.RequestID, Source: source, RestoredFrom: input.RestoredFrom,
+		CreatedAt: s.now().UTC(),
 	}
 	if err := s.finishApply(ctx, revision, pendingKey, pendingRecord.Version); err != nil {
 		return dataplane.FLXRulesResult{}, err
@@ -222,6 +234,8 @@ func (s *Service) Restore(ctx context.Context, scope dataplane.Scope, revision u
 		return dataplane.FLXRulesResult{}, err
 	}
 	input.Rules = append([]dataplane.FLXRule(nil), stored.Rules...)
+	input.Source = "restore"
+	input.RestoredFrom = &revision
 	return s.Apply(ctx, scope, input)
 }
 
