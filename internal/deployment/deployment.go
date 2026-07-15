@@ -154,8 +154,8 @@ func Init(options InitOptions) (InitResult, error) {
 		return InitResult{}, err
 	}
 	manifestJSON = append(manifestJSON, '\n')
-	environment := fmt.Sprintf("BARQ_PROJECT=%s\nBARQ_DOMAIN=%s\nBARQ_CONTROL_IMAGE=%s\nBARQ_CORE_IMAGE=%s\nBARQ_INTERNAL_SECRET=%s\nBARQ_API_KEY=%s\nBARQ_TENANT=default\nBARQ_DATABASE=default\nBARQ_LOG_LEVEL=info\nBARQ_ALLOW_PRIVATE_WEBHOOKS=false\n",
-		manifest.Project, domain, options.ControlImage, options.CoreImage, internalSecret, apiKey)
+	environment := fmt.Sprintf("BARQ_PROJECT=%s\nBARQ_DOMAIN=%s\nBARQ_SITE_ADDRESS=https://%s\nBARQ_HTTP_BIND=0.0.0.0:80\nBARQ_HTTPS_BIND=0.0.0.0:443\nBARQ_CONTROL_IMAGE=%s\nBARQ_CORE_IMAGE=%s\nBARQ_INTERNAL_SECRET=%s\nBARQ_API_KEY=%s\nBARQ_TENANT=default\nBARQ_DATABASE=default\nBARQ_LOG_LEVEL=info\nBARQ_ALLOW_PRIVATE_WEBHOOKS=false\n",
+		manifest.Project, domain, domain, options.ControlImage, options.CoreImage, internalSecret, apiKey)
 
 	files := []struct {
 		name string

@@ -63,11 +63,12 @@ services:
     image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${BARQ_HTTP_BIND:-0.0.0.0:80}:80"
+      - "${BARQ_HTTPS_BIND:-0.0.0.0:443}:443"
+      - "${BARQ_HTTPS_BIND:-0.0.0.0:443}:443/udp"
     environment:
       BARQ_DOMAIN: ${BARQ_DOMAIN}
+      BARQ_SITE_ADDRESS: ${BARQ_SITE_ADDRESS:-https://${BARQ_DOMAIN}}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

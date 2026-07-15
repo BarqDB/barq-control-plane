@@ -138,12 +138,37 @@ Generated Docker deployments enable FLX sync by default. Standalone Core keeps
 FLX off unless `--enable-flx` is passed. `barqctl doctor` checks both the Core
 capability and the live rule API.
 The generated `.env` and JWT private key use file mode `0600`.
-Each domain gets stable Compose project, volume, and network names. The default
-bundle owns public ports 80 and 443, so it expects one public client stack per
-host. The later SaaS shape is one small isolated host per client, with several
-tenants inside that client's stack. The key created by `barqctl init` is the
-global admin key for that stack. The `default/default` tenant and database are
-registered on first start; more tenants can be added in the control console.
+Each domain gets stable Compose project, volume, and network names. By default
+the bundle owns public ports 80 and 443, so it expects one public client stack
+per host. The later SaaS shape is one small isolated host per client, with
+several tenants inside that client's stack. The key created by `barqctl init` is
+the global admin key for that stack. The `default/default` tenant and database
+are registered on first start; more tenants can be added in the control console.
+
+### Behind an existing reverse proxy
+
+A host that already terminates TLS for other sites cannot give ports 80 and 443
+to the bundle. Point three `.env` settings at a loopback port instead, and let
+the existing proxy forward to it:
+
+```sh
+BARQ_SITE_ADDRESS=:80
+BARQ_HTTP_BIND=127.0.0.1:8090
+BARQ_HTTPS_BIND=127.0.0.1:8443
+```
+
+`BARQ_SITE_ADDRESS` replaces the `https://<domain>` site address, so the edge
+serves plain HTTP and never requests a certificate. The outer proxy owns TLS and
+must forward `/barq-sync` as well, because device sync uses that path:
+
+```
+db.example.com {
+	reverse_proxy 127.0.0.1:8090
+}
+```
+
+`barqctl upgrade` rewrites `compose.yaml` and the `Caddyfile` from the release
+bundle, so keep this configuration in `.env`, which upgrades preserve.
 
 For source builds without a published release, provide both images explicitly:
 
