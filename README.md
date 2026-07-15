@@ -155,8 +155,8 @@ go run ./cmd/barqctl init --domain db.example.com --release main \
 
 Tagged releases publish signed GHCR images, SBOM and provenance attestations,
 fixed image digests in `release.json`, and `barqctl` binaries for Linux, macOS,
-and Windows. Both server images are Linux AMD64. The release bundle includes
-Cosign. `barqctl init` and `upgrade`
+and Windows. Both server images support Linux AMD64 and ARM64. The release
+bundle includes Cosign. `barqctl init` and `upgrade`
 reject an image unless its digest was signed by the tagged Barq release
 workflow. Rollback uses a fixed digest that was verified when first installed,
 so emergency recovery does not need the signing service to be online.
