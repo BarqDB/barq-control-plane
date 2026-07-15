@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for a test build. Images are pushed; no GitHub release is published."
+        required: true
+        default: v0.0.0-test
 
 permissions:
   contents: write
@@ -18,13 +24,20 @@ env:
   COSIGN_VERSION: 3.1.1
   CONTROL_IMAGE: ghcr.io/barqdb/barq-control-plane
   CORE_IMAGE: ghcr.io/barqdb/barq-core
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
-  control-image:
-    name: Publish control-plane image
-    runs-on: ubuntu-24.04
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
+  control-build:
+    name: Build control-plane image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out control plane
         uses: actions/checkout@v7
@@ -42,8 +55,71 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Set up ARM emulation
-        uses: docker/setup-qemu-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.CONTROL_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=control-release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=control-release-${{ matrix.arch }}
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
+        with:
+          image-ref: ${{ env.CONTROL_IMAGE }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Save digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: control-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  control-image:
+    name: Publish control-plane image
+    runs-on: ubuntu-24.04
+    needs: control-build
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: control-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -52,44 +128,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: server/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.CONTROL_IMAGE }}:${{ github.ref_name }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ github.ref_name }}
-            org.opencontainers.image.revision=${{ github.sha }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha,scope=control-release
-          cache-to: type=gha,mode=max,scope=control-release
-
-      - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.CONTROL_IMAGE }}@${{ steps.build.outputs.digest }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+      - name: Merge per-architecture digests into one manifest list
+        id: merge
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create --tag "${CONTROL_IMAGE}:${VERSION}" \
+            $(printf "${CONTROL_IMAGE}@sha256:%s " *)
+          digest=$(docker buildx imagetools inspect "${CONTROL_IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          case "$digest" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "unexpected manifest list digest: $digest" >&2; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
 
-      - name: Sign image digest
-        run: cosign sign --yes "${CONTROL_IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Sign manifest list digest
+        run: cosign sign --yes "${CONTROL_IMAGE}@${{ steps.merge.outputs.digest }}"
 
-  core-image:
-    name: Publish Core image
-    runs-on: ubuntu-24.04
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
+  core-build:
+    name: Build Core image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out control plane
         uses: actions/checkout@v7
@@ -107,8 +176,71 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Set up ARM emulation
-        uses: docker/setup-qemu-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: core
+          file: server/Dockerfile.core
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/BarqDB/barq-core
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ env.BARQ_CORE_COMMIT }}
+          sbom: true
+          provenance: mode=max
+          outputs: type=image,name=${{ env.CORE_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=core-release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=core-release-${{ matrix.arch }}
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
+        with:
+          image-ref: ${{ env.CORE_IMAGE }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Save digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  core-image:
+    name: Publish Core image
+    runs-on: ubuntu-24.04
+    needs: core-build
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: core-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -117,38 +249,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: core
-          file: server/Dockerfile.core
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.CORE_IMAGE }}:${{ github.ref_name }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/BarqDB/barq-core
-            org.opencontainers.image.version=${{ github.ref_name }}
-            org.opencontainers.image.revision=${{ env.BARQ_CORE_COMMIT }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha,scope=core-release
-          cache-to: type=gha,mode=max,scope=core-release
-
-      - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.CORE_IMAGE }}@${{ steps.build.outputs.digest }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+      - name: Merge per-architecture digests into one manifest list
+        id: merge
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create --tag "${CORE_IMAGE}:${VERSION}" \
+            $(printf "${CORE_IMAGE}@sha256:%s " *)
+          digest=$(docker buildx imagetools inspect "${CORE_IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          case "$digest" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "unexpected manifest list digest: $digest" >&2; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
 
-      - name: Sign image digest
-        run: cosign sign --yes "${CORE_IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Sign manifest list digest
+        run: cosign sign --yes "${CORE_IMAGE}@${{ steps.merge.outputs.digest }}"
 
   barqctl:
     name: Build barqctl (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -198,7 +317,7 @@ jobs:
           suffix=""
           if [ "$GOOS" = windows ]; then suffix=".exe"; fi
           mkdir -p "dist/package"
-          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/package/barqctl${suffix}" ./cmd/barqctl
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/package/barqctl${suffix}" ./cmd/barqctl
 
           base="https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}"
           curl --fail --silent --show-error --location --output /tmp/SHA256SUMS "${base}/SHA256SUMS"
@@ -225,7 +344,7 @@ jobs:
           cp "/tmp/${cosign_asset}" "dist/package/cosign${cosign_suffix}"
           chmod 0755 "dist/package/cosign${cosign_suffix}"
 
-          archive="barq-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
+          archive="barq-${VERSION}-${GOOS}-${GOARCH}"
           if [ "$GOOS" = windows ]; then
             (cd dist/package && zip -9 "../${archive}.zip" barqctl.exe restic.exe cosign.exe)
             (cd dist && sha256sum "${archive}.zip" > "${archive}.zip.sha256")
@@ -246,6 +365,7 @@ jobs:
     name: Publish release manifest
     runs-on: ubuntu-24.04
     needs: [control-image, core-image, barqctl]
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Check out installers
         uses: actions/checkout@v7
@@ -267,7 +387,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           manifest = {
-              "version": os.environ["GITHUB_REF_NAME"],
+              "version": os.environ["VERSION"],
               "control_image": os.environ["CONTROL_IMAGE"] + "@" + os.environ["CONTROL_DIGEST"],
               "core_image": os.environ["CORE_IMAGE"] + "@" + os.environ["CORE_DIGEST"],
               "internal_protocol": 1,

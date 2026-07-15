@@ -1,4 +1,4 @@
-{$BARQ_DOMAIN} {
+{$BARQ_SITE_ADDRESS} {
 	encode zstd gzip
 
 	@barq_sync path /barq-sync /barq-sync/*
