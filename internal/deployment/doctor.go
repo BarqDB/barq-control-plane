@@ -293,13 +293,43 @@ func environmentValue(path, wanted string) (string, error) {
 	return "", fmt.Errorf("%s is missing", wanted)
 }
 
-func healthyServices(data []byte) (string, error) {
-	var services []struct {
-		Service string `json:"Service"`
-		State   string `json:"State"`
-		Health  string `json:"Health"`
+type composeService struct {
+	Service string `json:"Service"`
+	State   string `json:"State"`
+	Health  string `json:"Health"`
+}
+
+// composeServices reads `docker compose ps --format json`, which prints a JSON
+// array up to Compose v2.20 and one JSON object per line from v2.21 on.
+func composeServices(data []byte) ([]composeService, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, nil
 	}
-	if err := json.Unmarshal(data, &services); err != nil {
+	if data[0] == '[' {
+		var services []composeService
+		if err := json.Unmarshal(data, &services); err != nil {
+			return nil, err
+		}
+		return services, nil
+	}
+	var services []composeService
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var service composeService
+		if err := decoder.Decode(&service); err != nil {
+			if errors.Is(err, io.EOF) {
+				return services, nil
+			}
+			return nil, err
+		}
+		services = append(services, service)
+	}
+}
+
+func healthyServices(data []byte) (string, error) {
+	services, err := composeServices(data)
+	if err != nil {
 		return "", fmt.Errorf("read container state: %w", err)
 	}
 	wanted := map[string]bool{"core": false, "control": false, "edge": false}
